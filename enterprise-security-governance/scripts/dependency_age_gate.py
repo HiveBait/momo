@@ -89,7 +89,7 @@ class ScorecardViolation:
     def __str__(self) -> str:
         return (f"📊 {self.ecosystem} package '{self.name}@{self.version}' "
                 f"has OpenSSF Scorecard score {self.score:.1f}/10.0 "
-                f"(below '{OPENSSF_MAX_RISK_LEVEL}' risk threshold: {OPENSSF_MIN_SCORE:.1f})")
+                f"(fails '{OPENSSF_MAX_RISK_LEVEL}' risk requirement: score must be >= {OPENSSF_MIN_SCORE:.1f})")
 
 
 def load_allowlist() -> Dict:
