@@ -18,6 +18,10 @@ on:
         required: false
         type: number
         default: 0
+    secrets:
+      REPO_ACCESS_TOKEN:
+        description: 'GitHub PAT with repo scope for cross-repository operations'
+        required: false
 
 jobs:
   discover-repositories:
@@ -30,7 +34,7 @@ jobs:
       - name: Scan Organization for Non-Compliant Repos
         id: scan
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           echo "Scanning organization: ${{ inputs.organization }}"
 
@@ -62,7 +66,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.organization }}/${{ matrix.repo }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
       - name: Checkout Enterprise Security Governance Templates
@@ -70,7 +74,7 @@ jobs:
         with:
           repository: ${{ inputs.organization }}/momo
           path: security-tools
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 1
           sparse-checkout: |
             enterprise-security-governance/templates/
@@ -232,7 +236,7 @@ jobs:
       - name: Create Pull Request
         if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           pr_body="## 🛡️ Supply Chain Security Compliance
 
