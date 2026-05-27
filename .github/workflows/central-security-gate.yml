@@ -14,8 +14,8 @@ on:
         default: 'main'
     secrets:
       CORALOGIX_API_KEY:
-        required: true
-        description: 'Organization-level Coralogix API key for SIEM telemetry'
+        required: false
+        description: 'Organization-level Coralogix API key for SIEM telemetry (optional)'
 
 jobs:
   supply-chain-age-gate:
@@ -80,9 +80,9 @@ jobs:
             echo "gate_result=One or more dependencies violate age policy" >> $GITHUB_OUTPUT
           fi
 
-      # Step 6: Ship telemetry to Coralogix SIEM (always runs)
+      # Step 6: Ship telemetry to Coralogix SIEM (optional - only if API key provided)
       - name: Ship Audit Logs to Coralogix
-        if: always()
+        if: always() && secrets.CORALOGIX_API_KEY != ''
         uses: coralogix/github-actions-integration@v1
         with:
           api-key: ${{ secrets.CORALOGIX_API_KEY }}
