@@ -66,39 +66,38 @@ jobs:
           echo "Actor: ${{ github.actor }}"
           echo "Event: ${{ github.event_name }}"
 
-          # Capture script output for PR comment
-          OUTPUT=$(python3 ${{ github.workspace }}/security-tools/enterprise-security-governance/scripts/dependency_age_gate.py 2>&1 || true)
+          # Run validation and capture output
+          set +e  # Don't exit on error
+          OUTPUT=$(python3 ${{ github.workspace }}/security-tools/enterprise-security-governance/scripts/dependency_age_gate.py 2>&1)
+          EXIT_CODE=$?
+          set -e
+
+          # Display output
           echo "$OUTPUT"
 
-          # Save violations to file for PR comment
-          echo "$OUTPUT" > /tmp/violations.txt
+          # Extract violations (lines with ❌) and save to GITHUB_OUTPUT
+          VIOLATIONS=$(echo "$OUTPUT" | grep "❌" || echo "")
 
-          # Check if there were violations
-          if echo "$OUTPUT" | grep -q "❌"; then
-            exit 1
+          # Save to output using heredoc for multi-line
+          if [ -n "$VIOLATIONS" ]; then
+            echo "violations<<VIOLATION_EOF" >> $GITHUB_OUTPUT
+            echo "$VIOLATIONS" >> $GITHUB_OUTPUT
+            echo "VIOLATION_EOF" >> $GITHUB_OUTPUT
           fi
-          echo "::endgroup::"
 
-      # Step 5: Capture results for telemetry and PR comment
+          echo "::endgroup::"
+          exit $EXIT_CODE
+
+      # Step 5: Capture results for telemetry
       - name: Capture Security Gate Result
         id: result
         run: |
           if [ "${{ steps.age_gate.outcome }}" == "success" ]; then
             echo "gate_status=PASSED" >> $GITHUB_OUTPUT
             echo "gate_result=All dependencies comply with 7-day maturation policy" >> $GITHUB_OUTPUT
-            echo "violations=" >> $GITHUB_OUTPUT
           else
             echo "gate_status=FAILED" >> $GITHUB_OUTPUT
             echo "gate_result=One or more dependencies violate age policy" >> $GITHUB_OUTPUT
-
-            # Extract violation details for PR comment
-            if [ -f /tmp/violations.txt ]; then
-              VIOLATIONS=$(cat /tmp/violations.txt | grep "❌" || echo "No detailed violations found")
-              # Multi-line output requires delimiter
-              echo "violations<<EOF" >> $GITHUB_OUTPUT
-              echo "$VIOLATIONS" >> $GITHUB_OUTPUT
-              echo "EOF" >> $GITHUB_OUTPUT
-            fi
           fi
 
       # Step 6: Log telemetry (Coralogix integration can be added later)
@@ -115,7 +114,8 @@ jobs:
 
       # Step 7: Comment on PR with results (if applicable)
       - name: Post PR Comment
-        if: github.event_name == 'pull_request' && steps.age_gate.outcome == 'failure'
+        if: steps.age_gate.outcome == 'failure'
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -134,8 +134,8 @@ jobs:
               contextNote = '\n\n**Note:** This is a Dependabot update using the standard 7-day threshold.';
             }
 
-            // Get violations from previous step
-            const violations = `${{ steps.result.outputs.violations }}` || 'No violation details captured';
+            // Get violations from age_gate step
+            const violations = `${{ steps.age_gate.outputs.violations }}` || 'No violation details captured';
 
             const comment = `## 🛡️ Supply Chain Security Gate: FAILED
 
