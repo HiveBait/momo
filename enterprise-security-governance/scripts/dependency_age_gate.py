@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """
-Multi-Language Dependency Age Gate Validator
-Enforces 7-day maturation rule for supply chain security across npm, PyPI, and Go modules.
+Multi-Language Dependency Age Gate Validator with OpenSSF Scorecard Integration
+
+Enforces two-layer supply chain security:
+1. Age Policy: 7-day maturation rule for all packages (npm, PyPI, Go)
+2. OpenSSF Scorecard: Minimum security score threshold (configurable, default 5.0/10.0)
+
 Zero external dependencies - uses only Python standard library.
+
+Configuration via environment variables:
+- OPENSSF_ENABLED: Enable/disable OpenSSF checks (default: true)
+- OPENSSF_MIN_SCORE: Minimum acceptable score (default: 5.0)
+- WORKSPACE_PATH: Override workspace directory
 """
 
 import json
@@ -26,8 +35,14 @@ INTERNAL_PACKAGE_PATTERNS = [
     r'^@yourcompany/',
 ]
 
-# Global cache to avoid redundant API calls
+# OpenSSF Scorecard Configuration
+OPENSSF_ENABLED = os.environ.get("OPENSSF_ENABLED", "true").lower() == "true"
+OPENSSF_MIN_SCORE = float(os.environ.get("OPENSSF_MIN_SCORE", "5.0"))
+OPENSSF_API_BASE = "https://api.securityscorecards.dev/projects"
+
+# Global caches to avoid redundant API calls
 REGISTRY_CACHE: Dict[str, datetime] = {}
+OPENSSF_CACHE: Dict[str, Optional[float]] = {}
 
 
 class PackageViolation:
@@ -43,6 +58,20 @@ class PackageViolation:
     def __str__(self) -> str:
         return (f"❌ {self.ecosystem} package '{self.name}@{self.version}' "
                 f"published {self.age_days} days ago (minimum: {AGE_THRESHOLD_DAYS} days)")
+
+
+class ScorecardViolation:
+    """Represents a package that fails OpenSSF Scorecard requirements."""
+
+    def __init__(self, name: str, version: str, score: float, ecosystem: str):
+        self.name = name
+        self.version = version
+        self.score = score
+        self.ecosystem = ecosystem
+
+    def __str__(self) -> str:
+        return (f"📊 {self.ecosystem} package '{self.name}@{self.version}' "
+                f"has OpenSSF Scorecard score {self.score:.1f}/10.0 (minimum: {OPENSSF_MIN_SCORE:.1f})")
 
 
 def load_allowlist() -> Dict:
@@ -153,6 +182,65 @@ def get_go_publish_date(module_path: str, version: str) -> Optional[datetime]:
         REGISTRY_CACHE[cache_key] = publish_date
         return publish_date
 
+    return None
+
+
+def get_openssf_score(package_name: str, ecosystem: str) -> Optional[float]:
+    """Query OpenSSF Scorecard API for package security score.
+
+    Returns score (0.0-10.0) or None if unavailable.
+    API is free and does not require authentication.
+    """
+    if not OPENSSF_ENABLED:
+        return None
+
+    cache_key = f"openssf:{ecosystem}:{package_name}"
+
+    if cache_key in OPENSSF_CACHE:
+        return OPENSSF_CACHE[cache_key]
+
+    # Map ecosystem to OpenSSF platform identifier
+    platform_map = {
+        "npm": "npm",
+        "pypi": "pypi",
+        "go": "github.com"  # Go modules are on GitHub
+    }
+
+    platform = platform_map.get(ecosystem)
+    if not platform:
+        return None
+
+    # For Go modules, extract GitHub path (e.g., github.com/org/repo)
+    if ecosystem == "go":
+        # Go modules like "github.com/user/repo/v2" -> "github.com/user/repo"
+        parts = package_name.split('/')
+        if len(parts) >= 3 and parts[0] == "github.com":
+            package_name = "/".join(parts[:3])
+        else:
+            # Not a GitHub module, can't score
+            OPENSSF_CACHE[cache_key] = None
+            return None
+
+    # Query OpenSSF API
+    url = f"{OPENSSF_API_BASE}/{platform}/{package_name}"
+
+    try:
+        req = Request(url, headers={'User-Agent': 'Enterprise-Security-Governance/1.0'})
+        with urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+
+            # Extract score from response
+            score = data.get("score")
+            if score is not None:
+                score_float = float(score)
+                OPENSSF_CACHE[cache_key] = score_float
+                return score_float
+
+    except (URLError, HTTPError, json.JSONDecodeError, ValueError, KeyError) as e:
+        # Silently cache failures to avoid repeated queries
+        pass
+
+    OPENSSF_CACHE[cache_key] = None
     return None
 
 
@@ -320,9 +408,10 @@ def is_dependabot_context() -> Tuple[bool, bool]:
     return is_dependabot, is_security
 
 
-def validate_dependencies(workspace_path: str) -> List[PackageViolation]:
-    """Scan workspace for all lockfiles and validate dependency ages."""
-    violations = []
+def validate_dependencies(workspace_path: str) -> Tuple[List[PackageViolation], List[ScorecardViolation]]:
+    """Scan workspace for all lockfiles and validate dependency ages and OpenSSF scores."""
+    age_violations = []
+    scorecard_violations = []
     allowlist = load_allowlist()
 
     # Determine threshold based on context
@@ -373,9 +462,12 @@ def validate_dependencies(workspace_path: str) -> List[PackageViolation]:
     if not all_packages:
         print("⚠️  No lockfiles found. This repository may be missing dependency lockfiles.")
         print("   Consider running the bulk-lockfile-generator workflow.\n")
-        return []
+        return [], []
 
-    print(f"\n🔎 Validating {len(all_packages)} total dependencies...\n")
+    if OPENSSF_ENABLED:
+        print(f"\n🔎 Validating {len(all_packages)} total dependencies (age + OpenSSF Scorecard)...\n")
+    else:
+        print(f"\n🔎 Validating {len(all_packages)} total dependencies (age only)...\n")
 
     # Validate each package
     for ecosystem, package_name, version in all_packages:
@@ -387,7 +479,7 @@ def validate_dependencies(workspace_path: str) -> List[PackageViolation]:
         if is_allowlisted(package_name, version, allowlist):
             continue
 
-        # Query registry for publish date
+        # Check 1: Package Age
         publish_date = None
 
         if ecosystem == "npm":
@@ -397,12 +489,18 @@ def validate_dependencies(workspace_path: str) -> List[PackageViolation]:
         elif ecosystem == "go":
             publish_date = get_go_publish_date(package_name, version)
 
-        # Check age
         if publish_date and publish_date > cutoff_date:
             violation = PackageViolation(package_name, version, publish_date, ecosystem)
-            violations.append(violation)
+            age_violations.append(violation)
 
-    return violations
+        # Check 2: OpenSSF Scorecard (if enabled)
+        if OPENSSF_ENABLED:
+            score = get_openssf_score(package_name, ecosystem)
+            if score is not None and score < OPENSSF_MIN_SCORE:
+                scorecard_violation = ScorecardViolation(package_name, version, score, ecosystem)
+                scorecard_violations.append(scorecard_violation)
+
+    return age_violations, scorecard_violations
 
 
 def main():
@@ -417,23 +515,42 @@ def main():
     print("🛡️  Enterprise Supply Chain Security Gate")
     print("=" * 80)
 
-    violations = validate_dependencies(workspace_path)
+    age_violations, scorecard_violations = validate_dependencies(workspace_path)
+    total_violations = len(age_violations) + len(scorecard_violations)
 
-    if violations:
+    if total_violations > 0:
         print("\n" + "=" * 80)
-        print(f"❌ SECURITY GATE FAILED: {len(violations)} violations detected")
+        print(f"❌ SECURITY GATE FAILED: {total_violations} violations detected")
         print("=" * 80 + "\n")
 
-        for violation in violations:
-            print(violation)
+        # Print age violations first
+        if age_violations:
+            print(f"📅 Age Policy Violations ({len(age_violations)}):")
+            print("-" * 80)
+            for violation in age_violations:
+                print(violation)
+            print()
+
+        # Print scorecard violations
+        if scorecard_violations:
+            print(f"📊 OpenSSF Scorecard Violations ({len(scorecard_violations)}):")
+            print("-" * 80)
+            for violation in scorecard_violations:
+                print(violation)
+            print()
 
         # Check context for better messaging
         is_dependabot, is_security = is_dependabot_context()
         threshold = DEPENDABOT_SECURITY_THRESHOLD_DAYS if (is_dependabot and is_security) else AGE_THRESHOLD_DAYS
 
-        print(f"\n📋 Violations summary:")
-        print(f"   - Total violations: {len(violations)}")
-        print(f"   - Policy: Packages must be published at least {threshold} days ago")
+        print(f"📋 Violations Summary:")
+        print(f"   - Age violations: {len(age_violations)}")
+        print(f"   - Scorecard violations: {len(scorecard_violations)}")
+        print(f"   - Total violations: {total_violations}")
+        print(f"   - Age policy: Packages must be published at least {threshold} days ago")
+
+        if OPENSSF_ENABLED:
+            print(f"   - Scorecard policy: Packages must score at least {OPENSSF_MIN_SCORE:.1f}/10.0")
 
         if is_dependabot and is_security:
             print(f"   - Context: Dependabot security update (reduced threshold applied)")
@@ -441,21 +558,31 @@ def main():
 
         print(f"   - Action required: Wait for packages to mature or request break-glass exemption\n")
 
-        print("🔧 To request an exemption, add to policies/allowlist.json:")
-        print("   {")
-        print(f'     "package": "{violations[0].name}",')
-        print(f'     "version": "{violations[0].version}",')
-        print('     "reason": "Critical security patch",')
-        print('     "expires_at": "2026-06-01T00:00:00Z"')
-        print("   }\n")
+        if age_violations:
+            print("🔧 To request an age policy exemption, add to policies/allowlist.json:")
+            print("   {")
+            print(f'     "package": "{age_violations[0].name}",')
+            print(f'     "version": "{age_violations[0].version}",')
+            print('     "reason": "Critical security patch",')
+            print('     "expires_at": "2026-06-01T00:00:00Z"')
+            print("   }\n")
 
         sys.exit(1)
 
     else:
         print("\n" + "=" * 80)
-        print("✅ SECURITY GATE PASSED: All dependencies comply with age policy")
+        checks_performed = ["age policy"]
+        if OPENSSF_ENABLED:
+            checks_performed.append("OpenSSF Scorecard")
+
+        print(f"✅ SECURITY GATE PASSED: All dependencies comply with {' + '.join(checks_performed)}")
         print("=" * 80 + "\n")
         print(f"📊 Cache efficiency: {len(REGISTRY_CACHE)} registry lookups cached")
+
+        if OPENSSF_ENABLED:
+            scored_count = sum(1 for score in OPENSSF_CACHE.values() if score is not None)
+            print(f"📊 OpenSSF Scorecard: {scored_count} packages scored successfully")
+
         sys.exit(0)
 
 
