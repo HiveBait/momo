@@ -68,13 +68,13 @@ jobs:
       - name: Checkout Enterprise Security Governance Templates
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.organization }}/enterprise-security-governance
+          repository: ${{ inputs.organization }}/momo
           path: security-tools
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
           sparse-checkout: |
-            templates/
-            .github/dependabot.yml
+            enterprise-security-governance/templates/
+            enterprise-security-governance/.github/dependabot.yml
 
       - name: Detect Missing Lockfiles
         id: detect
@@ -139,8 +139,8 @@ jobs:
           mkdir -p .github
 
           # Copy template from security governance repo
-          if [ -f "security-tools/.github/dependabot.yml" ]; then
-            cp security-tools/.github/dependabot.yml .github/dependabot.yml
+          if [ -f "security-tools/enterprise-security-governance/.github/dependabot.yml" ]; then
+            cp security-tools/enterprise-security-governance/.github/dependabot.yml .github/dependabot.yml
             echo "dependabot_deployed=true" >> $GITHUB_ENV
             echo "✅ Dependabot configuration deployed"
           else
@@ -154,16 +154,16 @@ jobs:
 
           # Deploy .npmrc for npm/pnpm projects (if package.json exists)
           if [ -f "package.json" ]; then
-            if [ -f "security-tools/templates/.npmrc" ]; then
-              cp security-tools/templates/.npmrc .npmrc
+            if [ -f "security-tools/enterprise-security-governance/templates/.npmrc" ]; then
+              cp security-tools/enterprise-security-governance/templates/.npmrc .npmrc
               git add .npmrc
               echo "✅ npm/pnpm protection deployed (.npmrc)"
               echo "npmrc_deployed=true" >> $GITHUB_ENV
             fi
 
             # Deploy bunfig.toml for bun projects
-            if [ -f "security-tools/templates/.bunfig.toml" ]; then
-              cp security-tools/templates/.bunfig.toml bunfig.toml
+            if [ -f "security-tools/enterprise-security-governance/templates/.bunfig.toml" ]; then
+              cp security-tools/enterprise-security-governance/templates/.bunfig.toml bunfig.toml
               git add bunfig.toml
               echo "✅ bun protection deployed (bunfig.toml)"
               echo "bunfig_deployed=true" >> $GITHUB_ENV
