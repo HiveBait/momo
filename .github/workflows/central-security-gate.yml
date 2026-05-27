@@ -63,7 +63,7 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           # OpenSSF Scorecard Configuration (optional)
           # OPENSSF_ENABLED: "true"  # Enable/disable OpenSSF checks (default: true)
-          # OPENSSF_MAX_RISK_LEVEL: "medium"  # Max risk: low (2.5), medium (5.0), high (7.5), critical (10.0)
+          # OPENSSF_MIN_SCORE: "5.0"  # Minimum acceptable score (default: 5.0, range: 0.0-10.0)
         run: |
           echo "::group::Dependency Age Validation"
           echo "Actor: ${{ github.actor }}"

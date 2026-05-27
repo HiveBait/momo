@@ -4,14 +4,13 @@ Multi-Language Dependency Age Gate Validator with OpenSSF Scorecard Integration
 
 Enforces two-layer supply chain security:
 1. Age Policy: 7-day maturation rule for all packages (npm, PyPI, Go)
-2. OpenSSF Scorecard: Risk-based security score threshold (configurable, default: medium)
+2. OpenSSF Scorecard: Minimum security score threshold (configurable, default 5.0/10.0)
 
 Zero external dependencies - uses only Python standard library.
 
 Configuration via environment variables:
 - OPENSSF_ENABLED: Enable/disable OpenSSF checks (default: true)
-- OPENSSF_MAX_RISK_LEVEL: Maximum acceptable risk level (default: medium)
-  Valid values: low (2.5), medium (5.0), high (7.5), critical (10.0)
+- OPENSSF_MIN_SCORE: Minimum acceptable score (default: 5.0)
 - WORKSPACE_PATH: Override workspace directory
 """
 
@@ -38,23 +37,7 @@ INTERNAL_PACKAGE_PATTERNS = [
 
 # OpenSSF Scorecard Configuration
 OPENSSF_ENABLED = os.environ.get("OPENSSF_ENABLED", "true").lower() == "true"
-
-# Risk level thresholds (aligned with OpenSSF aggregate score weighting)
-# See: https://github.com/ossf/scorecard#aggregate-score
-RISK_THRESHOLDS = {
-    "low": 2.5,
-    "medium": 5.0,
-    "high": 7.5,
-    "critical": 10.0
-}
-
-# Maximum acceptable risk level (packages scoring below this are blocked)
-OPENSSF_MAX_RISK_LEVEL = os.environ.get("OPENSSF_MAX_RISK_LEVEL", "medium").lower()
-if OPENSSF_MAX_RISK_LEVEL not in RISK_THRESHOLDS:
-    print(f"⚠️  Warning: Invalid OPENSSF_MAX_RISK_LEVEL '{OPENSSF_MAX_RISK_LEVEL}', defaulting to 'medium'")
-    OPENSSF_MAX_RISK_LEVEL = "medium"
-
-OPENSSF_MIN_SCORE = RISK_THRESHOLDS[OPENSSF_MAX_RISK_LEVEL]
+OPENSSF_MIN_SCORE = float(os.environ.get("OPENSSF_MIN_SCORE", "5.0"))
 OPENSSF_API_BASE = "https://api.securityscorecards.dev/projects"
 
 # Global caches to avoid redundant API calls
@@ -88,8 +71,7 @@ class ScorecardViolation:
 
     def __str__(self) -> str:
         return (f"📊 {self.ecosystem} package '{self.name}@{self.version}' "
-                f"has OpenSSF Scorecard score {self.score:.1f}/10.0 "
-                f"(fails '{OPENSSF_MAX_RISK_LEVEL}' risk requirement: score must be >= {OPENSSF_MIN_SCORE:.1f})")
+                f"has OpenSSF Scorecard score {self.score:.1f}/10.0 (minimum required: {OPENSSF_MIN_SCORE:.1f})")
 
 
 def load_allowlist() -> Dict:
@@ -640,7 +622,7 @@ def main():
         print(f"   - Age policy: Packages must be published at least {threshold} days ago")
 
         if OPENSSF_ENABLED:
-            print(f"   - Scorecard policy: Packages must meet '{OPENSSF_MAX_RISK_LEVEL}' risk threshold (score >= {OPENSSF_MIN_SCORE:.1f}/10.0)")
+            print(f"   - Scorecard policy: Packages must score at least {OPENSSF_MIN_SCORE:.1f}/10.0")
 
         if is_dependabot and is_security:
             print(f"   - Context: Dependabot security update (reduced threshold applied)")
