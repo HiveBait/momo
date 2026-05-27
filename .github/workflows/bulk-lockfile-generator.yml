@@ -314,15 +314,18 @@ jobs:
           ---
           *Automated by [Enterprise Security Governance](https://github.com/${{ inputs.organization }}/enterprise-security-governance)*"
 
-          gh pr create \
+          # Create PR without labels (labels may not exist in all repos)
+          PR_URL=$(gh pr create \
             --repo ${{ inputs.organization }}/${{ matrix.repo }} \
             --head ${{ env.branch_name }} \
             --base main \
             --title "🔒 [Security] Add dependency lockfiles for compliance" \
-            --body "$pr_body" \
-            --label "security,compliance,automated"
+            --body "$pr_body")
 
-          echo "✅ Pull request created for ${{ matrix.repo }}"
+          echo "✅ Pull request created: $PR_URL"
+
+          # Try to add labels (fail silently if labels don't exist)
+          gh pr edit "$PR_URL" --add-label "security,compliance,automated" 2>/dev/null || echo "⚠️  Note: Could not add labels (labels may not exist in repository)"
 
       - name: Dry Run Summary
         if: inputs.dry_run == true && steps.detect.outputs.skip == 'false'
