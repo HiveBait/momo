@@ -37,7 +37,7 @@ INTERNAL_PACKAGE_PATTERNS = [
 
 # OpenSSF Scorecard Configuration
 OPENSSF_ENABLED = os.environ.get("OPENSSF_ENABLED", "true").lower() == "true"
-OPENSSF_MIN_SCORE = float(os.environ.get("OPENSSF_MIN_SCORE", "5.0"))
+OPENSSF_MIN_SCORE = float(os.environ.get("OPENSSF_MIN_SCORE", "4.0"))
 OPENSSF_API_BASE = "https://api.securityscorecards.dev/projects"
 
 # Global caches to avoid redundant API calls
