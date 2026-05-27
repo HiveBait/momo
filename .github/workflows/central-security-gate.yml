@@ -44,7 +44,6 @@ jobs:
           ref: master
           path: security-tools
           fetch-depth: 1
-          token: ${{ github.token }}
 
       # Step 3: Set up Python environment (using standard library only)
       - name: Set up Python
