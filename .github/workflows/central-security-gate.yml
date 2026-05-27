@@ -82,7 +82,8 @@ jobs:
 
       # Step 6: Ship telemetry to Coralogix SIEM (optional - only if API key provided)
       - name: Ship Audit Logs to Coralogix
-        if: always() && secrets.CORALOGIX_API_KEY != ''
+        if: always()
+        continue-on-error: true
         uses: coralogix/github-actions-integration@v1
         with:
           api-key: ${{ secrets.CORALOGIX_API_KEY }}
