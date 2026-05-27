@@ -317,8 +317,23 @@ def parse_package_lock_json(workspace_path: str) -> List[Tuple[str, str]]:
                 package_name = package_path.replace("node_modules/", "")
                 version = package_info.get("version")
 
-                if version:
-                    packages.append((package_name, version))
+                if not version:
+                    continue
+
+                # Skip bundled/nested dependencies (lockfile v3 format issue)
+                # Valid packages: "express", "@aws-sdk/client-acm"
+                # Invalid (bundled): "aws-cdk-lib/fs-extra", "parent/@scoped/nested"
+                if package_name.startswith("@"):
+                    # Scoped package: @org/name is valid, @org/parent/nested is bundled
+                    parts = package_name.split("/")
+                    if len(parts) > 2:  # @org/parent/nested
+                        continue
+                else:
+                    # Regular package: no slash allowed (parent/nested is bundled)
+                    if "/" in package_name:
+                        continue
+
+                packages.append((package_name, version))
 
         # Fallback to v1 format
         elif "dependencies" in data:
@@ -356,7 +371,9 @@ def parse_poetry_lock(workspace_path: str) -> List[Tuple[str, str]]:
                     current_version = line.split('"')[1]
 
                     if current_package and current_version:
-                        packages.append((current_package, current_version))
+                        # Skip malformed package names (should not contain "/" in PyPI)
+                        if "/" not in current_package:
+                            packages.append((current_package, current_version))
                         current_package = None
                         current_version = None
 
@@ -388,7 +405,12 @@ def parse_uv_lock(workspace_path: str) -> List[Tuple[str, str]]:
             version_match = re.search(r'version\s*=\s*"([^"]+)"', section)
 
             if name_match and version_match:
-                packages.append((name_match.group(1), version_match.group(1)))
+                package_name = name_match.group(1)
+                package_version = version_match.group(1)
+
+                # Skip malformed package names (should not contain "/" in PyPI)
+                if "/" not in package_name:
+                    packages.append((package_name, package_version))
 
         return packages
 
