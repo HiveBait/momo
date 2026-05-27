@@ -65,19 +65,40 @@ jobs:
           echo "::group::Dependency Age Validation"
           echo "Actor: ${{ github.actor }}"
           echo "Event: ${{ github.event_name }}"
-          python3 ${{ github.workspace }}/security-tools/enterprise-security-governance/scripts/dependency_age_gate.py
+
+          # Capture script output for PR comment
+          OUTPUT=$(python3 ${{ github.workspace }}/security-tools/enterprise-security-governance/scripts/dependency_age_gate.py 2>&1 || true)
+          echo "$OUTPUT"
+
+          # Save violations to file for PR comment
+          echo "$OUTPUT" > /tmp/violations.txt
+
+          # Check if there were violations
+          if echo "$OUTPUT" | grep -q "❌"; then
+            exit 1
+          fi
           echo "::endgroup::"
 
-      # Step 5: Capture results for telemetry
+      # Step 5: Capture results for telemetry and PR comment
       - name: Capture Security Gate Result
         id: result
         run: |
           if [ "${{ steps.age_gate.outcome }}" == "success" ]; then
             echo "gate_status=PASSED" >> $GITHUB_OUTPUT
             echo "gate_result=All dependencies comply with 7-day maturation policy" >> $GITHUB_OUTPUT
+            echo "violations=" >> $GITHUB_OUTPUT
           else
             echo "gate_status=FAILED" >> $GITHUB_OUTPUT
             echo "gate_result=One or more dependencies violate age policy" >> $GITHUB_OUTPUT
+
+            # Extract violation details for PR comment
+            if [ -f /tmp/violations.txt ]; then
+              VIOLATIONS=$(cat /tmp/violations.txt | grep "❌" || echo "No detailed violations found")
+              # Multi-line output requires delimiter
+              echo "violations<<EOF" >> $GITHUB_OUTPUT
+              echo "$VIOLATIONS" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            fi
           fi
 
       # Step 6: Log telemetry (Coralogix integration can be added later)
@@ -113,14 +134,23 @@ jobs:
               contextNote = '\n\n**Note:** This is a Dependabot update using the standard 7-day threshold.';
             }
 
+            // Get violations from previous step
+            const violations = `${{ steps.result.outputs.violations }}` || 'No violation details captured';
+
             const comment = `## 🛡️ Supply Chain Security Gate: FAILED
 
             **Policy Violation Detected:** One or more dependencies were published within the required maturation period.
 
+            ### 🚨 Violations Detected:
+
+            \`\`\`
+            ${violations}
+            \`\`\`
+
             ### 📋 Required Actions:
-            1. Review the workflow logs for specific package violations
-            2. Wait for packages to mature (recommended)
-            3. Request a break-glass exemption if critical:
+            1. **Wait for packages to mature** (recommended) - Re-run checks after ${threshold}
+            2. **Remove the package** if not critical
+            3. **Request break-glass exemption** if urgent:
                - File PR to \`enterprise-security-governance/policies/allowlist.json\`
                - Include business justification and expiration date
                - Requires SecOps team approval
@@ -128,7 +158,7 @@ jobs:
             ### 📊 Policy Details:
             - **Threshold:** ${threshold} minimum package age
             - **Rationale:** Mitigate supply chain compromise (e.g., TanStack incident)
-            - **Override process:** See [Security Runbook](https://github.com/${{ github.repository_owner }}/enterprise-security-governance/blob/main/README.md)${contextNote}
+            - **Override process:** See [Security Runbook](https://github.com/${{ github.repository_owner }}/momo/blob/master/enterprise-security-governance/README.md)${contextNote}
 
             *Automated by Enterprise Security Governance Framework*`;
 
