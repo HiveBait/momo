@@ -1,0 +1,360 @@
+name: Bulk Lockfile Remediation
+
+on:
+  workflow_dispatch:
+    inputs:
+      organization:
+        description: 'GitHub organization to scan'
+        required: true
+        type: string
+        default: 'HiveBait'
+      dry_run:
+        description: 'Dry run mode (no PRs created)'
+        required: false
+        type: boolean
+        default: false
+      max_repos:
+        description: 'Maximum repositories to process (0 = unlimited)'
+        required: false
+        type: number
+        default: 0
+
+jobs:
+  discover-repositories:
+    name: Discover Repositories Needing Lockfiles
+    runs-on: ubuntu-latest
+    outputs:
+      repositories: ${{ steps.scan.outputs.repositories }}
+
+    steps:
+      - name: Scan Organization for Non-Compliant Repos
+        id: scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Scanning organization: ${{ inputs.organization }}"
+
+          repos=$(gh repo list ${{ inputs.organization }} \
+            --limit 1000 \
+            --json name,isArchived,primaryLanguage \
+            --jq '.[] | select(.isArchived == false) | select(.primaryLanguage.name == "JavaScript" or .primaryLanguage.name == "TypeScript" or .primaryLanguage.name == "Python") | .name')
+
+          # Convert to JSON array
+          repo_array=$(echo "$repos" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "repositories=$repo_array" >> $GITHUB_OUTPUT
+          echo "Found $(echo "$repo_array" | jq 'length') repositories to check"
+
+  remediate-lockfiles:
+    name: Generate Lockfiles for ${{ matrix.repo }}
+    needs: discover-repositories
+    runs-on: ubuntu-latest
+    if: ${{ needs.discover-repositories.outputs.repositories != '[]' }}
+
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        repo: ${{ fromJson(needs.discover-repositories.outputs.repositories) }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.organization }}/${{ matrix.repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Checkout Enterprise Security Governance Templates
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.organization }}/enterprise-security-governance
+          path: security-tools
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          sparse-checkout: |
+            templates/
+            .github/dependabot.yml
+
+      - name: Detect Missing Lockfiles
+        id: detect
+        run: |
+          needs_npm=false
+          needs_python=false
+
+          # Check for Node.js projects without lockfiles
+          if [ -f "package.json" ] && [ ! -f "package-lock.json" ]; then
+            echo "Missing package-lock.json"
+            needs_npm=true
+          fi
+
+          # Check for Python projects without lockfiles
+          if [ -f "pyproject.toml" ] && [ ! -f "poetry.lock" ] && [ ! -f "uv.lock" ]; then
+            echo "Missing Python lockfile"
+            needs_python=true
+          fi
+
+          echo "needs_npm=$needs_npm" >> $GITHUB_OUTPUT
+          echo "needs_python=$needs_python" >> $GITHUB_OUTPUT
+
+          if [ "$needs_npm" == "false" ] && [ "$needs_python" == "false" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "✅ Repository already has lockfiles or no lockfiles needed"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Node.js
+        if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python with uv
+        if: steps.detect.outputs.needs_python == 'true' && steps.detect.outputs.skip == 'false'
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Generate npm Lockfile
+        if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Generating package-lock.json..."
+          npm install --package-lock-only
+          echo "npm_lockfile_created=true" >> $GITHUB_ENV
+
+      - name: Generate Python Lockfile (uv)
+        if: steps.detect.outputs.needs_python == 'true' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Generating uv.lock..."
+          uv lock
+          echo "python_lockfile_created=true" >> $GITHUB_ENV
+
+      - name: Deploy Dependabot Cooldown Configuration
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Deploying native Dependabot cooldown policy..."
+
+          # Create .github directory if it doesn't exist
+          mkdir -p .github
+
+          # Copy template from security governance repo
+          if [ -f "security-tools/.github/dependabot.yml" ]; then
+            cp security-tools/.github/dependabot.yml .github/dependabot.yml
+            echo "dependabot_deployed=true" >> $GITHUB_ENV
+            echo "✅ Dependabot configuration deployed"
+          else
+            echo "⚠️  Warning: Template dependabot.yml not found"
+          fi
+
+      - name: Deploy Client-Side Package Manager Protection (Layer 0)
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Deploying client-side package manager protection..."
+
+          # Deploy .npmrc for npm/pnpm projects (if package.json exists)
+          if [ -f "package.json" ]; then
+            if [ -f "security-tools/templates/.npmrc" ]; then
+              cp security-tools/templates/.npmrc .npmrc
+              git add .npmrc
+              echo "✅ npm/pnpm protection deployed (.npmrc)"
+              echo "npmrc_deployed=true" >> $GITHUB_ENV
+            fi
+
+            # Deploy bunfig.toml for bun projects
+            if [ -f "security-tools/templates/.bunfig.toml" ]; then
+              cp security-tools/templates/.bunfig.toml bunfig.toml
+              git add bunfig.toml
+              echo "✅ bun protection deployed (bunfig.toml)"
+              echo "bunfig_deployed=true" >> $GITHUB_ENV
+            fi
+          fi
+
+          # Deploy uv settings for Python projects (merge into pyproject.toml)
+          if [ -f "pyproject.toml" ]; then
+            # Check if [tool.uv] section already exists
+            if ! grep -q "\[tool\.uv\]" pyproject.toml; then
+              echo "" >> pyproject.toml
+              echo "[tool.uv]" >> pyproject.toml
+              echo 'exclude-newer = "7days"' >> pyproject.toml
+              echo 'prefer-binary = true' >> pyproject.toml
+              git add pyproject.toml
+              echo "✅ uv protection deployed (pyproject.toml)"
+              echo "uv_config_deployed=true" >> $GITHUB_ENV
+            else
+              echo "⚠️  [tool.uv] already exists in pyproject.toml, skipping"
+            fi
+          fi
+
+      - name: Create Compliance Branch
+        if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false
+        run: |
+          git config user.name "Enterprise Security Bot"
+          git config user.email "secops@h2o.ai"
+
+          branch_name="security/compliance-lockfile-enforcement-$(date +%Y%m%d)"
+          git checkout -b $branch_name
+
+          if [ -f "package-lock.json" ]; then
+            git add package-lock.json
+          fi
+
+          if [ -f "uv.lock" ]; then
+            git add uv.lock
+          fi
+
+          if [ -f ".github/dependabot.yml" ]; then
+            git add .github/dependabot.yml
+          fi
+
+          git commit -m "chore: Add dependency lockfiles and Dependabot cooldown policy
+
+          This PR adds missing lockfiles and native Dependabot supply chain protection.
+
+          Changes:
+          $([ -f "package-lock.json" ] && echo "  - ✅ package-lock.json (npm dependencies)")
+          $([ -f "uv.lock" ] && echo "  - ✅ uv.lock (Python dependencies)")
+          $([ -f ".github/dependabot.yml" ] && echo "  - ✅ .github/dependabot.yml (7-day cooldown policy)")
+
+          Security Policy:
+          - Dependabot will NOT create PRs for packages published < 7 days ago
+          - Security updates (CVE patches) bypass cooldown automatically
+          - Manual dependency updates validated by central security gate
+
+          Generated by: Enterprise Security Governance Framework
+          Documentation: https://github.com/${{ inputs.organization }}/enterprise-security-governance
+          Automation: bulk-lockfile-generator workflow"
+
+          git push origin $branch_name
+
+          echo "branch_name=$branch_name" >> $GITHUB_ENV
+
+      - name: Create Pull Request
+        if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_body="## 🛡️ Supply Chain Security Compliance
+
+          This automated PR adds missing lockfiles and native Dependabot supply chain protection.
+
+          ### 📦 Changes Made:
+          "
+
+          if [ -f "package-lock.json" ]; then
+            pr_body="$pr_body
+          - ✅ Generated \`package-lock.json\` for npm dependencies"
+          fi
+
+          if [ -f "uv.lock" ]; then
+            pr_body="$pr_body
+          - ✅ Generated \`uv.lock\` for Python dependencies"
+          fi
+
+          if [ -f ".github/dependabot.yml" ]; then
+            pr_body="$pr_body
+          - ✅ Deployed \`.github/dependabot.yml\` with native **7-day cooldown policy** (Layer 1)"
+          fi
+
+          if [ -f ".npmrc" ]; then
+            pr_body="$pr_body
+          - ✅ Deployed \`.npmrc\` for **client-side npm/pnpm protection** (Layer 0)"
+          fi
+
+          if [ -f "bunfig.toml" ]; then
+            pr_body="$pr_body
+          - ✅ Deployed \`bunfig.toml\` for **client-side bun protection** (Layer 0)"
+          fi
+
+          if [ "${{ env.uv_config_deployed }}" == "true" ]; then
+            pr_body="$pr_body
+          - ✅ Updated \`pyproject.toml\` with **uv protection settings** (Layer 0)"
+          fi
+
+          pr_body="$pr_body
+
+          ### 🔒 Multi-Layer Supply Chain Protection:
+
+          **Layer 0: Client-Side Protection (NEW)**
+          - 🛡️ Blocks \`npm install\` / \`uv pip install\` for packages < 7 days old
+          - 💻 Protects developer workstation before code written
+          - ✅ Config files checked into Git (automatic for all developers)
+
+          **Layer 1: Dependabot Cooldown Policy (Server-Side)**
+          - ⏸️ Dependabot will **NOT create PRs** for packages published < 7 days ago
+          - ✅ Security updates (CVE patches) **bypass cooldown automatically**
+          - 🔧 Patch releases: 3-day cooldown (faster for bug fixes)
+          - 📦 Feature updates: 7-day cooldown (full protection)
+          - 🚨 Major versions: 14-day cooldown (extended review period)
+
+          **Layer 2: Central Security Gate (Validation)**
+          - Validates manual dependency updates by developers
+          - Enforces break-glass allowlist policy
+          - Audit trail sent to Coralogix SIEM
+
+          **Layer 3: Observability**
+          - All security events logged to Coralogix
+          - Real-time alerting for violations
+          - Compliance audit trail
+
+          ### ✅ Next Steps:
+          1. Review the lockfiles for unexpected dependencies
+          2. Verify \`.github/dependabot.yml\` configuration
+          3. Merge this PR to enable native supply chain protection
+          4. Future Dependabot PRs will respect cooldown periods
+
+          ### 📚 Documentation:
+          - [Native Cooldown Migration Guide](https://github.com/${{ inputs.organization }}/enterprise-security-governance/blob/main/docs/NATIVE-COOLDOWN-MIGRATION.md)
+          - [Dependabot Integration](https://github.com/${{ inputs.organization }}/enterprise-security-governance/blob/main/docs/DEPENDABOT-INTEGRATION.md)
+
+          ---
+          *Automated by [Enterprise Security Governance](https://github.com/${{ inputs.organization }}/enterprise-security-governance)*"
+
+          gh pr create \
+            --repo ${{ inputs.organization }}/${{ matrix.repo }} \
+            --head ${{ env.branch_name }} \
+            --base main \
+            --title "🔒 [Security] Add dependency lockfiles for compliance" \
+            --body "$pr_body" \
+            --label "security,compliance,automated"
+
+          echo "✅ Pull request created for ${{ matrix.repo }}"
+
+      - name: Dry Run Summary
+        if: inputs.dry_run == true && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "🔍 DRY RUN: Would create PR for ${{ matrix.repo }}"
+          echo "Changes detected:"
+          if [ "${{ env.npm_lockfile_created }}" == "true" ]; then
+            echo "  - package-lock.json"
+          fi
+          if [ "${{ env.python_lockfile_created }}" == "true" ]; then
+            echo "  - uv.lock"
+          fi
+
+  summary:
+    name: Remediation Summary
+    needs: [discover-repositories, remediate-lockfiles]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        run: |
+          echo "## 📊 Bulk Lockfile Remediation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Organization:** ${{ inputs.organization }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Mode:** ${{ inputs.dry_run && 'Dry Run' || 'Live' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Repositories Scanned:** $(echo '${{ needs.discover-repositories.outputs.repositories }}' | jq 'length')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.dry_run }}" == "false" ]; then
+            echo "✅ Pull requests created for repositories missing lockfiles" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+            echo "1. Review and merge generated PRs" >> $GITHUB_STEP_SUMMARY
+            echo "2. Verify security gates pass on future PRs" >> $GITHUB_STEP_SUMMARY
+            echo "3. Monitor compliance via organization security dashboard" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "🔍 Dry run completed - no changes made" >> $GITHUB_STEP_SUMMARY
+          fi
