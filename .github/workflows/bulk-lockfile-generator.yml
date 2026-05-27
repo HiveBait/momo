@@ -36,8 +36,8 @@ jobs:
 
           repos=$(gh repo list ${{ inputs.organization }} \
             --limit 1000 \
-            --json name,isArchived,primaryLanguage \
-            --jq '.[] | select(.isArchived == false) | select(.primaryLanguage.name == "JavaScript" or .primaryLanguage.name == "TypeScript" or .primaryLanguage.name == "Python") | .name')
+            --json name,isArchived \
+            --jq '.[] | select(.isArchived == false) | .name')
 
           # Convert to JSON array
           repo_array=$(echo "$repos" | jq -R -s -c 'split("\n") | map(select(length > 0))')
