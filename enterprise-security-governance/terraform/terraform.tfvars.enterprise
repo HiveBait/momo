@@ -1,0 +1,105 @@
+# Enterprise-Level Deployment Configuration
+# Use this when deploying rulesets at GitHub Enterprise level (across all organizations)
+#
+# Copy to terraform.tfvars.local and fill in your values:
+#   cp terraform.tfvars.enterprise terraform.tfvars.local
+
+# ============================================================================
+# ENTERPRISE CONFIGURATION
+# ============================================================================
+
+# Enable enterprise-level deployment (applies to ALL organizations)
+enable_enterprise_level = true
+
+# Your GitHub Enterprise slug (e.g., "HiveBait-enterprise")
+# Find at: https://github.com/enterprises/<your-enterprise>/settings/profile
+github_enterprise_slug = "HiveBait-enterprise"
+
+# Enterprise security team ID for bypass permissions
+# Find at: https://github.com/orgs/<org>/teams/<team-slug>
+# Look for "Team ID" in the team settings
+enterprise_security_team_id = 123456
+
+# Hub repository ID (enterprise-security-governance)
+# Get via: gh api repos/HiveBait/enterprise-security-governance --jq .node_id
+hub_repository_id = "R_kgDOABCDEF"
+
+# ============================================================================
+# ENFORCEMENT MODE
+# ============================================================================
+
+# Start with "evaluate" (audit-only mode) for testing
+# Switch to "active" after validation period
+enforcement_mode = "evaluate"  # Options: active, evaluate, disabled
+
+# ============================================================================
+# ORGANIZATION CONFIGURATION (for org-level secrets)
+# ============================================================================
+
+# Primary organization name (for deploying secrets)
+# Even in enterprise mode, secrets are deployed per-organization
+organization_name = "HiveBait"
+
+# Security team slug within the organization
+security_team = "security-team"
+
+# ============================================================================
+# SECURITY POLICIES
+# ============================================================================
+
+# Enable required workflows (security gate checks)
+enable_required_workflows = true
+
+# Block PRs in repositories missing lockfiles
+enforce_lockfiles = false  # Start false, enable after bulk remediation
+
+# Package maturation threshold (days)
+max_package_age_days = 7
+
+# ============================================================================
+# OBSERVABILITY
+# ============================================================================
+
+# Coralogix API key (SENSITIVE - store in environment variable instead)
+# export TF_VAR_coralogix_api_key="your-key-here"
+# coralogix_api_key = "set-via-environment-variable"
+
+# Coralogix application name for log aggregation
+coralogix_application_name = "enterprise-security-governance"
+
+# ============================================================================
+# OPTIONAL: GitHub App Integration
+# ============================================================================
+
+# Pin status checks to specific GitHub App (optional)
+# Prevents spoofing of security gate checks
+# github_app_integration_id = 123456
+
+# ============================================================================
+# DEPLOYMENT NOTES
+# ============================================================================
+#
+# Prerequisites:
+# 1. GitHub Enterprise Cloud or GitHub Enterprise Server 3.13+
+# 2. GitHub PAT with enterprise admin permissions:
+#    - admin:enterprise (manage enterprise rulesets)
+#    - admin:org (manage organization secrets)
+#    - repo (access repositories)
+#
+# Deployment:
+#   export GITHUB_TOKEN="ghp_..."
+#   export TF_VAR_coralogix_api_key="..."
+#   terraform init
+#   terraform plan -var-file=terraform.tfvars.local
+#   terraform apply -var-file=terraform.tfvars.local
+#
+# Testing:
+# 1. Deploy with enforcement_mode = "evaluate"
+# 2. Monitor audit logs for 7-14 days
+# 3. Review false positive rate
+# 4. Switch to enforcement_mode = "active"
+#
+# Rollback:
+# 1. Set enforcement_mode = "disabled"
+# 2. terraform apply
+# 3. No rulesets enforced, audit continues

@@ -1,0 +1,18 @@
+# CODEOWNERS - Security Policy Enforcement
+# All changes to security policies require SecOps team approval
+
+# Global default owners (SecOps team)
+*       @HiveBait/security-team
+
+# Critical security components require 2+ SecOps approvals
+/scripts/dependency_age_gate.py     @HiveBait/security-team
+/policies/allowlist.json            @HiveBait/security-team
+/.github/workflows/                 @HiveBait/security-team
+/terraform/                         @HiveBait/security-team
+
+# Break-glass allowlist requires senior security engineer approval
+/policies/allowlist.json            @HiveBait/security-leadership
+
+# Documentation can be approved by broader team
+/README.md                          @HiveBait/security-team @HiveBait/platform-engineering
+/docs/                              @HiveBait/security-team @HiveBait/platform-engineering

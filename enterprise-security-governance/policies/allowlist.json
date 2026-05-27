@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Break-glass exemptions for supply chain security age gate policy",
+  "exemptions": [
+    {
+      "package": "example-package",
+      "version": "1.0.0",
+      "ecosystem": "npm",
+      "reason": "Critical security patch for CVE-2026-12345",
+      "requested_by": "john.doe@h2o.ai",
+      "approved_by": "secops-team@h2o.ai",
+      "created_at": "2026-05-01T00:00:00Z",
+      "expires_at": "2026-06-01T00:00:00Z",
+      "jira_ticket": "SEC-1234"
+    }
+  ],
+  "metadata": {
+    "policy_version": "1.0",
+    "last_updated": "2026-05-25T00:00:00Z",
+    "approval_required": true,
+    "max_exemption_duration_days": 30
+  }
+}

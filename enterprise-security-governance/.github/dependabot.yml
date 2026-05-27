@@ -1,0 +1,94 @@
+# Dependabot Configuration for Enterprise Security Governance
+# Template deployed to all spoke repositories via bulk-lockfile-generator
+#
+# Implements 7-day package maturation policy using native GitHub cooldown feature
+# Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#cooldown
+
+version: 2
+
+updates:
+  # ============================================================================
+  # Node.js (npm)
+  # ============================================================================
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "03:00"  # Run during off-hours (UTC)
+
+    # Native maturation enforcement via cooldown
+    cooldown:
+      default-days: 7              # Block PRs for packages < 7 days old
+      semver-major-days: 14        # Extended cooldown for major version changes
+      semver-minor-days: 7         # Standard cooldown for minor updates
+      semver-patch-days: 3         # Reduced cooldown for patch releases
+
+    open-pull-requests-limit: 10   # Max concurrent PRs
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # ============================================================================
+  # Python (pip / uv / poetry)
+  # ============================================================================
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "03:00"
+
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "python"
+
+  # ============================================================================
+  # Go modules
+  # ============================================================================
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "03:00"
+
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "go"
+
+# ============================================================================
+# POLICY NOTES
+# ============================================================================
+#
+# Maturation Strategy:
+# - default-days: 7      → Protects against supply chain attacks (TanStack incident)
+# - semver-major-days: 14 → Extended review for breaking changes
+# - semver-minor-days: 7  → Standard protection for feature additions
+# - semver-patch-days: 3  → Faster for bug fixes (still protected)
+#
+# Security Updates:
+# - CVE patches automatically bypass cooldown (GitHub native behavior)
+# - No additional configuration needed
+# - GitHub Security Advisories trigger immediate PRs
+#
+# Enforcement:
+# - Cooldown applied at PR creation time (prevents spam)
+# - Central security gate (required workflow) provides secondary validation
+# - Break-glass exemptions available via policies/allowlist.json
+#
+# Deployment:
+# - This file is a template in enterprise-security-governance repo
+# - Deployed to all repos via bulk-lockfile-generator workflow
+# - Maintained centrally, rolled out automatically

@@ -1,0 +1,11 @@
+# Bun Configuration - Supply Chain Security
+# Deploy this to: ~/.bunfig.toml (user) or project root (per-project)
+
+[install]
+# Block packages published within last 7 days (604800 seconds)
+minimumReleaseAge = 604800
+
+# Optional: Exact versions (no semver resolution)
+exact = true
+
+# Documentation: https://bun.sh/docs/cli/bunfig

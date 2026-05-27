@@ -1,0 +1,11 @@
+# uv Configuration - Supply Chain Security
+# Deploy this to: ~/.config/uv/uv.toml (user) or pyproject.toml (per-project)
+
+[tool.uv]
+# Block packages uploaded within last 7 days
+exclude-newer = "7days"
+
+# Optional: Prefer binary distributions (faster, less supply chain risk)
+prefer-binary = true
+
+# Documentation: https://docs.astral.sh/uv/configuration/

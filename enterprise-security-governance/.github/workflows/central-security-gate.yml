@@ -1,0 +1,152 @@
+name: Central Security Gate
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: 'Target repository to scan (format: org/repo)'
+        required: true
+        type: string
+      ref:
+        description: 'Git reference to checkout (branch, tag, or SHA)'
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      CORALOGIX_API_KEY:
+        required: true
+        description: 'Organization-level Coralogix API key for SIEM telemetry'
+
+jobs:
+  supply-chain-age-gate:
+    name: Enforce 7-Day Package Maturation Policy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write  # For commenting on PRs with results
+
+    steps:
+      # Step 1: Checkout the target spoke repository
+      - name: Checkout Target Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          path: workspace
+          fetch-depth: 1
+
+      # Step 2: Checkout the enterprise security governance repository
+      - name: Checkout Security Governance Tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/enterprise-security-governance
+          ref: main
+          path: security-tools
+          fetch-depth: 1
+
+      # Step 3: Set up Python environment (using standard library only)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step 4: Run dependency age validation
+      - name: Execute Supply Chain Age Gate
+        id: age_gate
+        continue-on-error: true
+        working-directory: workspace
+        env:
+          WORKSPACE_PATH: ${{ github.workspace }}/workspace
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          echo "::group::Dependency Age Validation"
+          echo "Actor: ${{ github.actor }}"
+          echo "Event: ${{ github.event_name }}"
+          python3 ${{ github.workspace }}/security-tools/scripts/dependency_age_gate.py
+          echo "::endgroup::"
+
+      # Step 5: Capture results for telemetry
+      - name: Capture Security Gate Result
+        id: result
+        run: |
+          if [ "${{ steps.age_gate.outcome }}" == "success" ]; then
+            echo "gate_status=PASSED" >> $GITHUB_OUTPUT
+            echo "gate_result=All dependencies comply with 7-day maturation policy" >> $GITHUB_OUTPUT
+          else
+            echo "gate_status=FAILED" >> $GITHUB_OUTPUT
+            echo "gate_result=One or more dependencies violate age policy" >> $GITHUB_OUTPUT
+          fi
+
+      # Step 6: Ship telemetry to Coralogix SIEM (always runs)
+      - name: Ship Audit Logs to Coralogix
+        if: always()
+        uses: coralogix/github-actions-integration@v1
+        with:
+          api-key: ${{ secrets.CORALOGIX_API_KEY }}
+          application-name: 'enterprise-security-governance'
+          subsystem-name: 'supply-chain-gate'
+          log-level: 'INFO'
+          custom-fields: |
+            repository=${{ inputs.repository }}
+            ref=${{ inputs.ref }}
+            gate_status=${{ steps.result.outputs.gate_status }}
+            gate_result=${{ steps.result.outputs.gate_result }}
+            workflow_run_id=${{ github.run_id }}
+            triggered_by=${{ github.actor }}
+
+      # Step 7: Comment on PR with results (if applicable)
+      - name: Post PR Comment
+        if: github.event_name == 'pull_request' && steps.age_gate.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const isDependabot = context.actor === 'dependabot[bot]' || context.actor === 'dependabot-preview[bot]';
+            const labels = context.payload.pull_request?.labels || [];
+            const isSecurity = labels.some(label => label.name === 'security');
+
+            let threshold = '7 days';
+            let contextNote = '';
+
+            if (isDependabot && isSecurity) {
+              threshold = '2 days (reduced for Dependabot security updates)';
+              contextNote = '\n\n**Note:** This is a Dependabot security update with a reduced 2-day maturation threshold instead of the standard 7 days.';
+            } else if (isDependabot) {
+              contextNote = '\n\n**Note:** This is a Dependabot update using the standard 7-day threshold.';
+            }
+
+            const comment = `## 🛡️ Supply Chain Security Gate: FAILED
+
+            **Policy Violation Detected:** One or more dependencies were published within the required maturation period.
+
+            ### 📋 Required Actions:
+            1. Review the workflow logs for specific package violations
+            2. Wait for packages to mature (recommended)
+            3. Request a break-glass exemption if critical:
+               - File PR to \`enterprise-security-governance/policies/allowlist.json\`
+               - Include business justification and expiration date
+               - Requires SecOps team approval
+
+            ### 📊 Policy Details:
+            - **Threshold:** ${threshold} minimum package age
+            - **Rationale:** Mitigate supply chain compromise (e.g., TanStack incident)
+            - **Override process:** See [Security Runbook](https://github.com/${{ github.repository_owner }}/enterprise-security-governance/blob/main/README.md)${contextNote}
+
+            *Automated by Enterprise Security Governance Framework*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      # Step 8: Fail the workflow if age gate detected violations
+      - name: Enforce Security Gate
+        if: steps.age_gate.outcome == 'failure'
+        run: |
+          echo "::error::Security gate failed. See logs for violation details."
+          exit 1
