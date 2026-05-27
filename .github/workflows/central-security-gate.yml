@@ -80,23 +80,17 @@ jobs:
             echo "gate_result=One or more dependencies violate age policy" >> $GITHUB_OUTPUT
           fi
 
-      # Step 6: Ship telemetry to Coralogix SIEM (optional - only if API key provided)
-      - name: Ship Audit Logs to Coralogix
+      # Step 6: Log telemetry (Coralogix integration can be added later)
+      - name: Log Security Gate Telemetry
         if: always()
-        continue-on-error: true
-        uses: coralogix/github-actions-integration@v1
-        with:
-          api-key: ${{ secrets.CORALOGIX_API_KEY }}
-          application-name: 'enterprise-security-governance'
-          subsystem-name: 'supply-chain-gate'
-          log-level: 'INFO'
-          custom-fields: |
-            repository=${{ inputs.repository }}
-            ref=${{ inputs.ref }}
-            gate_status=${{ steps.result.outputs.gate_status }}
-            gate_result=${{ steps.result.outputs.gate_result }}
-            workflow_run_id=${{ github.run_id }}
-            triggered_by=${{ github.actor }}
+        run: |
+          echo "::notice::Security Gate Telemetry"
+          echo "Repository: ${{ inputs.repository }}"
+          echo "Ref: ${{ inputs.ref }}"
+          echo "Gate Status: ${{ steps.result.outputs.gate_status }}"
+          echo "Gate Result: ${{ steps.result.outputs.gate_result }}"
+          echo "Workflow Run: ${{ github.run_id }}"
+          echo "Triggered By: ${{ github.actor }}"
 
       # Step 7: Comment on PR with results (if applicable)
       - name: Post PR Comment
