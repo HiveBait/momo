@@ -185,44 +185,95 @@ def get_go_publish_date(module_path: str, version: str) -> Optional[datetime]:
     return None
 
 
-def get_openssf_score(package_name: str, ecosystem: str) -> Optional[float]:
-    """Query OpenSSF Scorecard API for package security score.
+def get_github_repo_from_package(package_name: str, version: str, ecosystem: str) -> Optional[str]:
+    """Resolve package to GitHub repository using deps.dev API.
 
-    Returns score (0.0-10.0) or None if unavailable.
-    API is free and does not require authentication.
+    This is the same approach used by GitHub's dependency-review-action.
+    See: https://github.com/actions/dependency-review-action/blob/main/src/scorecard.ts
+
+    Returns GitHub repo path (e.g., 'github.com/org/repo') or None.
     """
     if not OPENSSF_ENABLED:
         return None
 
-    cache_key = f"openssf:{ecosystem}:{package_name}"
+    cache_key = f"depsdev:{ecosystem}:{package_name}@{version}"
 
     if cache_key in OPENSSF_CACHE:
-        return OPENSSF_CACHE[cache_key]
+        cached = OPENSSF_CACHE[cache_key]
+        return cached if cached != "NONE" else None
 
-    # Map ecosystem to OpenSSF platform identifier
-    platform_map = {
+    # Map ecosystem names to deps.dev format
+    ecosystem_map = {
         "npm": "npm",
         "pypi": "pypi",
-        "go": "github.com"  # Go modules are on GitHub
+        "go": "go",
+        "maven": "maven"
     }
 
-    platform = platform_map.get(ecosystem)
-    if not platform:
+    deps_ecosystem = ecosystem_map.get(ecosystem)
+    if not deps_ecosystem:
+        OPENSSF_CACHE[cache_key] = "NONE"
         return None
 
-    # For Go modules, extract GitHub path (e.g., github.com/org/repo)
-    if ecosystem == "go":
-        # Go modules like "github.com/user/repo/v2" -> "github.com/user/repo"
+    # For Go modules, try direct GitHub path first
+    if ecosystem == "go" and package_name.startswith("github.com/"):
         parts = package_name.split('/')
-        if len(parts) >= 3 and parts[0] == "github.com":
-            package_name = "/".join(parts[:3])
-        else:
-            # Not a GitHub module, can't score
-            OPENSSF_CACHE[cache_key] = None
-            return None
+        if len(parts) >= 3:
+            github_repo = "/".join(parts[:3])
+            OPENSSF_CACHE[cache_key] = github_repo
+            return github_repo
 
-    # Query OpenSSF API
-    url = f"{OPENSSF_API_BASE}/{platform}/{package_name}"
+    # Query deps.dev API to resolve package -> GitHub repo
+    # URL-encode package name for npm scoped packages (@org/package)
+    from urllib.parse import quote
+    encoded_package = quote(package_name, safe='')
+    url = f"https://api.deps.dev/v3/systems/{deps_ecosystem}/packages/{encoded_package}/versions/{version}"
+
+    try:
+        req = Request(url, headers={'User-Agent': 'Enterprise-Security-Governance/1.0'})
+        with urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+
+            # Extract GitHub repo from relatedProjects
+            related_projects = data.get("relatedProjects", [])
+            if related_projects and len(related_projects) > 0:
+                project_id = related_projects[0].get("projectKey", {}).get("id", "")
+                if project_id and project_id.startswith("github.com/"):
+                    OPENSSF_CACHE[cache_key] = project_id
+                    return project_id
+
+    except (URLError, HTTPError, json.JSONDecodeError, ValueError, KeyError):
+        pass
+
+    OPENSSF_CACHE[cache_key] = "NONE"
+    return None
+
+
+def get_openssf_score(package_name: str, version: str, ecosystem: str) -> Optional[float]:
+    """Query OpenSSF Scorecard API for package security score.
+
+    Uses deps.dev to resolve package -> GitHub repo, then queries OpenSSF.
+    This is the same approach used by GitHub's dependency-review-action.
+
+    Returns score (0.0-10.0) or None if unavailable.
+    APIs are free and do not require authentication.
+    """
+    if not OPENSSF_ENABLED:
+        return None
+
+    # Step 1: Resolve package to GitHub repository
+    github_repo = get_github_repo_from_package(package_name, version, ecosystem)
+    if not github_repo:
+        return None
+
+    # Step 2: Query OpenSSF Scorecard API with GitHub repo
+    cache_key = f"openssf:{github_repo}"
+
+    if cache_key in OPENSSF_CACHE:
+        cached = OPENSSF_CACHE[cache_key]
+        return cached if cached != "NONE" else None
+
+    url = f"{OPENSSF_API_BASE}/{github_repo}"
 
     try:
         req = Request(url, headers={'User-Agent': 'Enterprise-Security-Governance/1.0'})
@@ -236,11 +287,10 @@ def get_openssf_score(package_name: str, ecosystem: str) -> Optional[float]:
                 OPENSSF_CACHE[cache_key] = score_float
                 return score_float
 
-    except (URLError, HTTPError, json.JSONDecodeError, ValueError, KeyError) as e:
-        # Silently cache failures to avoid repeated queries
+    except (URLError, HTTPError, json.JSONDecodeError, ValueError, KeyError):
         pass
 
-    OPENSSF_CACHE[cache_key] = None
+    OPENSSF_CACHE[cache_key] = "NONE"
     return None
 
 
@@ -495,7 +545,7 @@ def validate_dependencies(workspace_path: str) -> Tuple[List[PackageViolation], 
 
         # Check 2: OpenSSF Scorecard (if enabled)
         if OPENSSF_ENABLED:
-            score = get_openssf_score(package_name, ecosystem)
+            score = get_openssf_score(package_name, version, ecosystem)
             if score is not None and score < OPENSSF_MIN_SCORE:
                 scorecard_violation = ScorecardViolation(package_name, version, score, ecosystem)
                 scorecard_violations.append(scorecard_violation)
