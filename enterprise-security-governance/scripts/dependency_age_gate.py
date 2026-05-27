@@ -3,8 +3,14 @@
 Multi-Language Dependency Age Gate Validator with OpenSSF Scorecard Integration
 
 Enforces two-layer supply chain security:
-1. Age Policy: 7-day maturation rule for all packages (npm, PyPI, Go)
+1. Age Policy: 7-day maturation rule for all packages (npm, PyPI, Go, Maven)
 2. OpenSSF Scorecard: Minimum security score threshold (configurable, default 5.0/10.0)
+
+Supported ecosystems:
+- npm (package-lock.json)
+- Python/PyPI (poetry.lock, uv.lock)
+- Go (go.sum)
+- Java/Maven (gradle.lockfile)
 
 Zero external dependencies - uses only Python standard library.
 
@@ -29,10 +35,11 @@ DEPENDABOT_SECURITY_THRESHOLD_DAYS = 2  # Reduced threshold for Dependabot secur
 DEPENDABOT_FEATURE_THRESHOLD_DAYS = 7   # Same as normal for feature updates
 ALLOWLIST_PATH = os.path.join(os.path.dirname(__file__), '..', 'policies', 'allowlist.json')
 INTERNAL_PACKAGE_PATTERNS = [
-    r'^@HiveBait/',
-    r'^github\.com/HiveBait/',
-    r'^buf\.build/gen/go/HiveBait/',  # H2O internal buf.build packages
-    r'^@yourcompany/',
+    r'^@HiveBait/',                     # npm scoped packages
+    r'^github\.com/HiveBait/',          # Go modules
+    r'^buf\.build/gen/go/HiveBait/',    # H2O internal buf.build packages
+    r'^com\.hivebait\.',                # Maven artifacts (groupId pattern)
+    r'^@yourcompany/',                  # npm scoped packages (example)
 ]
 
 # OpenSSF Scorecard Configuration
@@ -181,6 +188,32 @@ def get_go_publish_date(module_path: str, version: str) -> Optional[datetime]:
         publish_date = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
         REGISTRY_CACHE[cache_key] = publish_date
         return publish_date
+
+    return None
+
+
+def get_maven_publish_date(group_id: str, artifact_id: str, version: str) -> Optional[datetime]:
+    """Query Maven Central for artifact publish timestamp."""
+    cache_key = f"maven:{group_id}:{artifact_id}@{version}"
+
+    if cache_key in REGISTRY_CACHE:
+        return REGISTRY_CACHE[cache_key]
+
+    # Maven Central Search API
+    # Format: https://search.maven.org/solrsearch/select?q=g:{groupId}+AND+a:{artifactId}+AND+v:{version}&rows=1&wt=json
+    from urllib.parse import quote
+    query = f"g:{quote(group_id)}+AND+a:{quote(artifact_id)}+AND+v:{quote(version)}"
+    url = f"https://search.maven.org/solrsearch/select?q={query}&rows=1&wt=json"
+    data = fetch_json(url)
+
+    if data and "response" in data and "docs" in data["response"]:
+        docs = data["response"]["docs"]
+        if len(docs) > 0 and "timestamp" in docs[0]:
+            # Maven Central returns timestamp in milliseconds since epoch
+            timestamp_ms = docs[0]["timestamp"]
+            publish_date = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
+            REGISTRY_CACHE[cache_key] = publish_date
+            return publish_date
 
     return None
 
@@ -453,6 +486,55 @@ def parse_go_sum(workspace_path: str) -> List[Tuple[str, str]]:
         return []
 
 
+def parse_gradle_lockfile(workspace_path: str) -> List[Tuple[str, str, str]]:
+    """Extract Java dependency versions from gradle.lockfile.
+
+    Returns: List of tuples (groupId, artifactId, version)
+
+    Gradle lockfile format:
+        com.google.guava:guava:30.1.1-jre=compileClasspath,runtimeClasspath
+        org.apache.commons:commons-lang3:3.12.0=compileClasspath
+    """
+    lockfile_path = os.path.join(workspace_path, "gradle.lockfile")
+
+    if not os.path.exists(lockfile_path):
+        return []
+
+    try:
+        packages = []
+        seen = set()
+
+        with open(lockfile_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+
+                # Skip comments and empty lines
+                if not line or line.startswith('#'):
+                    continue
+
+                # Parse format: groupId:artifactId:version=configurations
+                if '=' in line:
+                    dependency_part = line.split('=')[0]
+                    parts = dependency_part.split(':')
+
+                    if len(parts) >= 3:
+                        group_id = parts[0]
+                        artifact_id = parts[1]
+                        version = parts[2]
+
+                        # Deduplicate (same dependency can appear with different configurations)
+                        key = f"{group_id}:{artifact_id}@{version}"
+                        if key not in seen:
+                            packages.append((group_id, artifact_id, version))
+                            seen.add(key)
+
+        return packages
+
+    except Exception as e:
+        print(f"⚠️  Warning: Could not parse gradle.lockfile: {e}")
+        return []
+
+
 def is_dependabot_context() -> Tuple[bool, bool]:
     """
     Detect if running in Dependabot context.
@@ -531,6 +613,13 @@ def validate_dependencies(workspace_path: str) -> Tuple[List[PackageViolation], 
         print(f"🔷 Found {len(go_packages)} Go modules in go.sum")
         all_packages.extend([("go", pkg, ver) for pkg, ver in go_packages])
 
+    # Java/Maven (Gradle lockfile)
+    gradle_packages = parse_gradle_lockfile(workspace_path)
+    if gradle_packages:
+        print(f"☕ Found {len(gradle_packages)} Java packages in gradle.lockfile")
+        # Store as tuple: ("maven", "groupId:artifactId", version)
+        all_packages.extend([("maven", f"{group_id}:{artifact_id}", ver) for group_id, artifact_id, ver in gradle_packages])
+
     if not all_packages:
         print("⚠️  No lockfiles found. This repository may be missing dependency lockfiles.")
         print("   Consider running the bulk-lockfile-generator workflow.\n")
@@ -560,6 +649,12 @@ def validate_dependencies(workspace_path: str) -> Tuple[List[PackageViolation], 
             publish_date = get_pypi_publish_date(package_name, version)
         elif ecosystem == "go":
             publish_date = get_go_publish_date(package_name, version)
+        elif ecosystem == "maven":
+            # Maven packages stored as "groupId:artifactId"
+            parts = package_name.split(':')
+            if len(parts) == 2:
+                group_id, artifact_id = parts
+                publish_date = get_maven_publish_date(group_id, artifact_id, version)
 
         if publish_date and publish_date > cutoff_date:
             violation = PackageViolation(package_name, version, publish_date, ecosystem)

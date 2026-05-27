@@ -1,0 +1,26 @@
+name: CI Security Gate
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'package-lock.json'
+      - 'pnpm-lock.yaml'
+      - 'yarn.lock'
+      - 'uv.lock'
+      - 'requirements.txt'
+      - 'go.sum'
+      - 'go.mod'
+      - 'gradle.lockfile'
+      - '*.lockfile'
+
+jobs:
+  call-security-hub:
+    uses: HiveBait/momo/.github/workflows/central-security-gate.yml@master
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.head_ref }}
+
+permissions:
+  contents: read          # Read repository contents
+  pull-requests: write    # Allow commenting on PRs

@@ -55,6 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ needs.discover-repositories.outputs.repositories != '[]' }}
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     strategy:
       fail-fast: false
       max-parallel: 5
@@ -85,6 +88,8 @@ jobs:
         run: |
           needs_npm=false
           needs_python=false
+          needs_go=false
+          needs_java=false
 
           # Check for Node.js projects without lockfiles
           if [ -f "package.json" ] && [ ! -f "package-lock.json" ]; then
@@ -98,10 +103,24 @@ jobs:
             needs_python=true
           fi
 
+          # Check for Go projects without lockfiles
+          if [ -f "go.mod" ] && [ ! -f "go.sum" ]; then
+            echo "Missing go.sum"
+            needs_go=true
+          fi
+
+          # Check for Java/Gradle projects without lockfiles
+          if ([ -f "build.gradle" ] || [ -f "build.gradle.kts" ]) && [ ! -f "gradle.lockfile" ]; then
+            echo "Missing gradle.lockfile"
+            needs_java=true
+          fi
+
           echo "needs_npm=$needs_npm" >> $GITHUB_OUTPUT
           echo "needs_python=$needs_python" >> $GITHUB_OUTPUT
+          echo "needs_go=$needs_go" >> $GITHUB_OUTPUT
+          echo "needs_java=$needs_java" >> $GITHUB_OUTPUT
 
-          if [ "$needs_npm" == "false" ] && [ "$needs_python" == "false" ]; then
+          if [ "$needs_npm" == "false" ] && [ "$needs_python" == "false" ] && [ "$needs_go" == "false" ] && [ "$needs_java" == "false" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "✅ Repository already has lockfiles or no lockfiles needed"
           else
@@ -112,13 +131,26 @@ jobs:
         if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Set up Python with uv
         if: steps.detect.outputs.needs_python == 'true' && steps.detect.outputs.skip == 'false'
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
+
+      - name: Set up Go
+        if: steps.detect.outputs.needs_go == 'true' && steps.detect.outputs.skip == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Set up Java
+        if: steps.detect.outputs.needs_java == 'true' && steps.detect.outputs.skip == 'false'
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
       - name: Generate npm Lockfile
         if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
@@ -133,6 +165,20 @@ jobs:
           echo "Generating uv.lock..."
           uv lock
           echo "python_lockfile_created=true" >> $GITHUB_ENV
+
+      - name: Generate Go Lockfile
+        if: steps.detect.outputs.needs_go == 'true' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Generating go.sum..."
+          go mod download
+          echo "go_lockfile_created=true" >> $GITHUB_ENV
+
+      - name: Generate Java Lockfile (Gradle)
+        if: steps.detect.outputs.needs_java == 'true' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Generating gradle.lockfile..."
+          ./gradlew dependencies --write-locks || gradle dependencies --write-locks
+          echo "java_lockfile_created=true" >> $GITHUB_ENV
 
       - name: Deploy Dependabot Cooldown Configuration
         if: steps.detect.outputs.skip == 'false'
@@ -149,6 +195,24 @@ jobs:
             echo "✅ Dependabot configuration deployed"
           else
             echo "⚠️  Warning: Template dependabot.yml not found"
+          fi
+
+      - name: Deploy Security Gate Workflow (Layer 2)
+        if: steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Deploying security gate workflow..."
+
+          # Create .github/workflows directory if it doesn't exist
+          mkdir -p .github/workflows
+
+          # Copy security-gate workflow template
+          if [ -f "security-tools/enterprise-security-governance/templates/.github-workflows-security-gate.yml" ]; then
+            cp security-tools/enterprise-security-governance/templates/.github-workflows-security-gate.yml .github/workflows/security-gate.yml
+            git add .github/workflows/security-gate.yml
+            echo "security_gate_deployed=true" >> $GITHUB_ENV
+            echo "✅ Security gate workflow deployed"
+          else
+            echo "⚠️  Warning: Template security-gate.yml not found"
           fi
 
       - name: Deploy Client-Side Package Manager Protection (Layer 0)
@@ -207,6 +271,14 @@ jobs:
             git add uv.lock
           fi
 
+          if [ -f "go.sum" ]; then
+            git add go.sum
+          fi
+
+          if [ -f "gradle.lockfile" ]; then
+            git add gradle.lockfile
+          fi
+
           if [ -f ".github/dependabot.yml" ]; then
             git add .github/dependabot.yml
           fi
@@ -218,6 +290,8 @@ jobs:
           Changes:
           $([ -f "package-lock.json" ] && echo "  - ✅ package-lock.json (npm dependencies)")
           $([ -f "uv.lock" ] && echo "  - ✅ uv.lock (Python dependencies)")
+          $([ -f "go.sum" ] && echo "  - ✅ go.sum (Go dependencies)")
+          $([ -f "gradle.lockfile" ] && echo "  - ✅ gradle.lockfile (Java dependencies)")
           $([ -f ".github/dependabot.yml" ] && echo "  - ✅ .github/dependabot.yml (7-day cooldown policy)")
 
           Security Policy:
@@ -255,9 +329,24 @@ jobs:
           - ✅ Generated \`uv.lock\` for Python dependencies"
           fi
 
+          if [ -f "go.sum" ]; then
+            pr_body="$pr_body
+          - ✅ Generated \`go.sum\` for Go dependencies"
+          fi
+
+          if [ -f "gradle.lockfile" ]; then
+            pr_body="$pr_body
+          - ✅ Generated \`gradle.lockfile\` for Java dependencies"
+          fi
+
           if [ -f ".github/dependabot.yml" ]; then
             pr_body="$pr_body
           - ✅ Deployed \`.github/dependabot.yml\` with native **7-day cooldown policy** (Layer 1)"
+          fi
+
+          if [ "${{ env.security_gate_deployed }}" == "true" ]; then
+            pr_body="$pr_body
+          - ✅ Deployed \`.github/workflows/security-gate.yml\` for **PR validation** (Layer 2)"
           fi
 
           if [ -f ".npmrc" ]; then
@@ -337,6 +426,12 @@ jobs:
           fi
           if [ "${{ env.python_lockfile_created }}" == "true" ]; then
             echo "  - uv.lock"
+          fi
+          if [ "${{ env.go_lockfile_created }}" == "true" ]; then
+            echo "  - go.sum"
+          fi
+          if [ "${{ env.java_lockfile_created }}" == "true" ]; then
+            echo "  - gradle.lockfile"
           fi
 
   summary:

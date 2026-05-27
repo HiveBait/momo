@@ -8,13 +8,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Structure
 
+**IMPORTANT: Current Hub Repository Configuration**
+
+This repository is currently named `momo` and contains the `enterprise-security-governance/` subdirectory as the security framework hub.
+
+**Repository Layout:**
+```
+HiveBait/momo/                                    ← Hub repository (configurable name)
+├── enterprise-security-governance/               ← Security framework (always this path)
+│   ├── .github/workflows/
+│   │   ├── central-security-gate.yml            ← Reusable workflow (Layer 2)
+│   │   └── bulk-lockfile-generator.yml          ← Deployment automation
+│   ├── scripts/dependency_age_gate.py           ← Validation logic
+│   ├── templates/                                ← Spoke deployment templates
+│   └── policies/allowlist.json                   ← Break-glass exemptions
+├── .github/workflows/                            ← Root-level workflows (for hub repo itself)
+│   ├── bulk-lockfile-generator.yml              ← Duplicate for convenience
+│   └── ...
+└── CLAUDE.md                                     ← This file
+```
+
+**If the hub repository name changes in the future**, update these locations:
+
+1. **Spoke workflow templates** (`templates/.github-workflows-security-gate.yml`):
+   ```yaml
+   uses: <org>/<new-hub-repo>/.github/workflows/central-security-gate.yml@main
+   #            ^^^^^^^^^^^^^^^^ Update this
+   ```
+
+2. **Bulk deployment workflow** (`.github/workflows/bulk-lockfile-generator.yml`):
+   - Line ~71: `repository: ${{ inputs.organization }}/momo` → Update to new repo name
+   - Line ~76: `sparse-checkout: enterprise-security-governance/...` → Path stays the same
+
+3. **Documentation references** in this file and README files that reference `HiveBait/momo`
+
+4. **Spoke repositories** already deployed: Must update their `.github/workflows/security-gate.yml` to reference new hub repo name
+
+**Key principle:** The security framework directory (`enterprise-security-governance/`) path is fixed, but the containing repository name (`momo`) is configurable.
+
+---
+
 ### enterprise-security-governance/
 Complete zero-cost supply chain security enforcement framework for GitHub Enterprise organizations using **hub-and-spoke architecture**.
 
 **Purpose:** Centralized policy hub that enforces 7-day package maturation gates across 1,000+ developer repositories. Updates once in the hub automatically apply to all spoke repositories.
 
 **Architecture:** Hub-and-Spoke (Reusable Workflows)
-- **Hub:** `enterprise-security-governance` repository (contains all security logic)
+- **Hub:** `momo` repository containing `enterprise-security-governance/` subdirectory (contains all security logic)
 - **Spokes:** All other repositories (minimal 23-line workflow that calls hub)
 - **Benefit:** Update security logic once in hub → all 1,000+ repos benefit immediately
 
@@ -226,15 +266,24 @@ gh run view <run-id> --log
 
 **Concept:** Single source of truth for security logic
 ```
-Hub (enterprise-security-governance)
-├── Central workflow: .github/workflows/central-security-gate.yml
-├── Validation script: scripts/dependency_age_gate.py
-└── Policy definitions: policies/allowlist.json
+Hub (HiveBait/momo repository)                    ← Configurable repository name
+└── enterprise-security-governance/               ← Fixed subdirectory path
+    ├── .github/workflows/
+    │   └── central-security-gate.yml            ← Reusable workflow
+    ├── scripts/dependency_age_gate.py           ← Validation logic
+    └── policies/allowlist.json                   ← Policy definitions
 
 Spoke Repos (1,000+)
-├── Minimal caller: .github/workflows/security-gate.yml (23 lines)
-└── Just calls: uses: h2oai/enterprise-security-governance/.github/workflows/central-security-gate.yml@main
+├── .github/workflows/security-gate.yml (23 lines)
+└── Calls: uses: HiveBait/momo/.github/workflows/central-security-gate.yml@main
+                  ^^^^^^^^^^^^
+                  Hub repository name (update if renamed)
 ```
+
+**Repository Name vs. Path:**
+- **Repository name** (`momo`): Configurable, can be changed
+- **Subdirectory path** (`enterprise-security-governance/`): Fixed, should not change
+- **Workflow reference format:** `<org>/<hub-repo>/.github/workflows/central-security-gate.yml@main`
 
 **Benefits:**
 - ✅ Update once in hub → all spokes benefit automatically
@@ -395,6 +444,39 @@ fi
 - Manual smoke test against real lockfiles
 
 ## Key Files and Locations
+
+### Files Requiring Updates if Hub Repository is Renamed
+
+**IMPORTANT:** If the hub repository name changes from `momo` to something else, update these files:
+
+1. **Root-level bulk deployment workflow:**
+   - File: `.github/workflows/bulk-lockfile-generator.yml`
+   - Line ~71: `repository: ${{ inputs.organization }}/momo`
+   - Line ~73: `token: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}`
+   - Update `momo` to new repository name
+
+2. **Subdirectory bulk deployment workflow:**
+   - File: `enterprise-security-governance/.github/workflows/bulk-lockfile-generator.yml`
+   - Line ~71: `repository: ${{ inputs.organization }}/momo`
+   - Update `momo` to new repository name
+
+3. **Spoke workflow template:**
+   - File: `enterprise-security-governance/templates/.github-workflows-security-gate.yml`
+   - Line referencing: `uses: HiveBait/momo/.github/workflows/central-security-gate.yml@main`
+   - Update `HiveBait/momo` to `<org>/<new-repo-name>`
+
+4. **All deployed spoke repositories:**
+   - Each spoke's `.github/workflows/security-gate.yml`
+   - Must be redeployed via bulk-lockfile-generator or manually updated
+
+5. **Documentation:**
+   - `CLAUDE.md` (this file)
+   - `README.md` files
+   - Any references to `HiveBait/momo` or example URLs
+
+**Path that stays constant:** `enterprise-security-governance/` subdirectory structure
+
+---
 
 ### Hub Repository (enterprise-security-governance/)
 
