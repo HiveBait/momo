@@ -339,6 +339,10 @@ jobs:
             git add uv.lock
           fi
 
+          if [ -f "requirements.lock" ]; then
+            git add requirements.lock
+          fi
+
           if [ -f "go.sum" ]; then
             git add go.sum
           fi
