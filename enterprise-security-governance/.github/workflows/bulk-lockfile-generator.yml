@@ -83,7 +83,8 @@ jobs:
         id: detect
         run: |
           needs_npm=false
-          needs_python=false
+          needs_python_modern=false
+          needs_python_legacy=false
           needs_go=false
           needs_java=false
 
@@ -93,10 +94,16 @@ jobs:
             needs_npm=true
           fi
 
-          # Check for Python projects without lockfiles
+          # Check for modern Python projects (pyproject.toml) without lockfiles
           if [ -f "pyproject.toml" ] && [ ! -f "poetry.lock" ] && [ ! -f "uv.lock" ]; then
-            echo "Missing Python lockfile"
-            needs_python=true
+            echo "Missing uv.lock (modern Python project)"
+            needs_python_modern=true
+          fi
+
+          # Check for legacy Python projects (requirements.txt only) without lockfiles
+          if [ -f "requirements.txt" ] && [ ! -f "pyproject.toml" ] && [ ! -f "requirements.lock" ]; then
+            echo "Missing requirements.lock (legacy Python project)"
+            needs_python_legacy=true
           fi
 
           # Check for Go projects without lockfiles
@@ -112,11 +119,12 @@ jobs:
           fi
 
           echo "needs_npm=$needs_npm" >> $GITHUB_OUTPUT
-          echo "needs_python=$needs_python" >> $GITHUB_OUTPUT
+          echo "needs_python_modern=$needs_python_modern" >> $GITHUB_OUTPUT
+          echo "needs_python_legacy=$needs_python_legacy" >> $GITHUB_OUTPUT
           echo "needs_go=$needs_go" >> $GITHUB_OUTPUT
           echo "needs_java=$needs_java" >> $GITHUB_OUTPUT
 
-          if [ "$needs_npm" == "false" ] && [ "$needs_python" == "false" ] && [ "$needs_go" == "false" ] && [ "$needs_java" == "false" ]; then
+          if [ "$needs_npm" == "false" ] && [ "$needs_python_modern" == "false" ] && [ "$needs_python_legacy" == "false" ] && [ "$needs_go" == "false" ] && [ "$needs_java" == "false" ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "✅ Repository already has lockfiles or no lockfiles needed"
           else
@@ -129,8 +137,14 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Set up Python with uv
-        if: steps.detect.outputs.needs_python == 'true' && steps.detect.outputs.skip == 'false'
+      - name: Set up Python with uv (modern)
+        if: steps.detect.outputs.needs_python_modern == 'true' && steps.detect.outputs.skip == 'false'
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Set up Python with uv (legacy)
+        if: steps.detect.outputs.needs_python_legacy == 'true' && steps.detect.outputs.skip == 'false'
         uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
@@ -155,11 +169,18 @@ jobs:
           npm install --package-lock-only
           echo "npm_lockfile_created=true" >> $GITHUB_ENV
 
-      - name: Generate Python Lockfile (uv)
-        if: steps.detect.outputs.needs_python == 'true' && steps.detect.outputs.skip == 'false'
+      - name: Generate Python Lockfile (uv.lock for modern projects)
+        if: steps.detect.outputs.needs_python_modern == 'true' && steps.detect.outputs.skip == 'false'
         run: |
-          echo "Generating uv.lock..."
+          echo "Generating uv.lock from pyproject.toml..."
           uv lock
+          echo "python_lockfile_created=true" >> $GITHUB_ENV
+
+      - name: Generate Python Lockfile (requirements.lock for legacy projects)
+        if: steps.detect.outputs.needs_python_legacy == 'true' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "Generating requirements.lock from requirements.txt..."
+          uv pip compile requirements.txt --generate-hashes -o requirements.lock
           echo "python_lockfile_created=true" >> $GITHUB_ENV
 
       - name: Generate Go Lockfile

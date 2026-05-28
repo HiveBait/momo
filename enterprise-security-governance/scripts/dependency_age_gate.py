@@ -452,6 +452,59 @@ def parse_uv_lock(workspace_path: str) -> List[Tuple[str, str]]:
         return []
 
 
+def parse_requirements_lock(workspace_path: str) -> List[Tuple[str, str]]:
+    """Extract Python package versions from requirements.lock (pinned with hashes).
+
+    Format:
+        flask==2.3.0 \
+            --hash=sha256:abc123... \
+            --hash=sha256:def456...
+        requests==2.28.0 \
+            --hash=sha256:xyz789...
+    """
+    lockfile_path = os.path.join(workspace_path, "requirements.lock")
+
+    if not os.path.exists(lockfile_path):
+        return []
+
+    try:
+        packages = []
+        seen = set()
+
+        with open(lockfile_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+
+                # Skip empty lines, comments, and hash lines
+                if not line or line.startswith('#') or line.startswith('--hash'):
+                    continue
+
+                # Remove trailing backslash and whitespace
+                line = line.rstrip('\\').strip()
+
+                # Parse package==version format
+                if '==' in line:
+                    # Split on == and take first two parts (ignore any --hash on same line)
+                    parts = line.split()
+                    package_spec = parts[0]  # e.g., "flask==2.3.0"
+
+                    if '==' in package_spec:
+                        package_name, version = package_spec.split('==', 1)
+                        package_name = package_name.strip()
+                        version = version.strip()
+
+                        key = f"{package_name}@{version}"
+                        if key not in seen:
+                            packages.append((package_name, version))
+                            seen.add(key)
+
+        return packages
+
+    except Exception as e:
+        print(f"⚠️  Warning: Could not parse requirements.lock: {e}")
+        return []
+
+
 def parse_go_sum(workspace_path: str) -> List[Tuple[str, str]]:
     """Extract Go module versions from go.sum."""
     gosum_path = os.path.join(workspace_path, "go.sum")
@@ -606,6 +659,12 @@ def validate_dependencies(workspace_path: str) -> Tuple[List[PackageViolation], 
     if uv_packages:
         print(f"⚡ Found {len(uv_packages)} Python packages in uv.lock")
         all_packages.extend([("pypi", pkg, ver) for pkg, ver in uv_packages])
+
+    # Python (requirements.lock - legacy format with hashes)
+    requirements_lock_packages = parse_requirements_lock(workspace_path)
+    if requirements_lock_packages:
+        print(f"📌 Found {len(requirements_lock_packages)} Python packages in requirements.lock")
+        all_packages.extend([("pypi", pkg, ver) for pkg, ver in requirements_lock_packages])
 
     # Go
     go_packages = parse_go_sum(workspace_path)
