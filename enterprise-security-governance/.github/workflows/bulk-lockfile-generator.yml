@@ -164,38 +164,88 @@ jobs:
 
       - name: Generate npm Lockfile
         if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating package-lock.json..."
-          npm install --package-lock-only
-          echo "npm_lockfile_created=true" >> $GITHUB_ENV
+          npm install --package-lock-only 2> npm_error.log
+          if [ $? -eq 0 ]; then
+            echo "npm_status=✅ Success" >> $GITHUB_ENV
+            echo "npm_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "npm_status=❌ Failed" >> $GITHUB_ENV
+            echo "npm_error<<EOF" >> $GITHUB_ENV
+            cat npm_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Python Lockfile (uv.lock for modern projects)
         if: steps.detect.outputs.needs_python_modern == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating uv.lock from pyproject.toml..."
-          uv lock
-          echo "python_lockfile_created=true" >> $GITHUB_ENV
+          uv lock 2> uv_error.log
+          if [ $? -eq 0 ]; then
+            echo "python_modern_status=✅ Success" >> $GITHUB_ENV
+            echo "python_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "python_modern_status=❌ Failed" >> $GITHUB_ENV
+            echo "python_modern_error<<EOF" >> $GITHUB_ENV
+            cat uv_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Python Lockfile (requirements.lock for legacy projects)
         if: steps.detect.outputs.needs_python_legacy == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating requirements.lock from requirements.txt..."
-          uv pip compile requirements.txt --generate-hashes -o requirements.lock
-          echo "python_lockfile_created=true" >> $GITHUB_ENV
+          uv pip compile requirements.txt --generate-hashes -o requirements.lock 2> requirements_error.log
+          if [ $? -eq 0 ]; then
+            echo "python_legacy_status=✅ Success" >> $GITHUB_ENV
+            echo "python_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "python_legacy_status=❌ Failed" >> $GITHUB_ENV
+            echo "python_legacy_error<<EOF" >> $GITHUB_ENV
+            cat requirements_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Go Lockfile
         if: steps.detect.outputs.needs_go == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating go.sum..."
-          go mod download
-          echo "go_lockfile_created=true" >> $GITHUB_ENV
+          go mod download 2> go_error.log
+          if [ $? -eq 0 ]; then
+            echo "go_status=✅ Success" >> $GITHUB_ENV
+            echo "go_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "go_status=❌ Failed" >> $GITHUB_ENV
+            echo "go_error<<EOF" >> $GITHUB_ENV
+            cat go_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Java Lockfile (Gradle)
         if: steps.detect.outputs.needs_java == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating gradle.lockfile..."
-          ./gradlew dependencies --write-locks || gradle dependencies --write-locks
-          echo "java_lockfile_created=true" >> $GITHUB_ENV
+          ./gradlew dependencies --write-locks 2> gradle_error.log || gradle dependencies --write-locks 2> gradle_error.log
+          if [ $? -eq 0 ]; then
+            echo "java_status=✅ Success" >> $GITHUB_ENV
+            echo "java_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "java_status=❌ Failed" >> $GITHUB_ENV
+            echo "java_error<<EOF" >> $GITHUB_ENV
+            cat gradle_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Deploy Dependabot Cooldown Configuration
         if: steps.detect.outputs.skip == 'false'

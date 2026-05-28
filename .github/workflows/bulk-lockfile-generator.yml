@@ -168,38 +168,88 @@ jobs:
 
       - name: Generate npm Lockfile
         if: steps.detect.outputs.needs_npm == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating package-lock.json..."
-          npm install --package-lock-only
-          echo "npm_lockfile_created=true" >> $GITHUB_ENV
+          npm install --package-lock-only 2> npm_error.log
+          if [ $? -eq 0 ]; then
+            echo "npm_status=✅ Success" >> $GITHUB_ENV
+            echo "npm_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "npm_status=❌ Failed" >> $GITHUB_ENV
+            echo "npm_error<<EOF" >> $GITHUB_ENV
+            cat npm_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Python Lockfile (uv.lock for modern projects)
         if: steps.detect.outputs.needs_python_modern == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating uv.lock from pyproject.toml..."
-          uv lock
-          echo "python_lockfile_created=true" >> $GITHUB_ENV
+          uv lock 2> uv_error.log
+          if [ $? -eq 0 ]; then
+            echo "python_modern_status=✅ Success" >> $GITHUB_ENV
+            echo "python_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "python_modern_status=❌ Failed" >> $GITHUB_ENV
+            echo "python_modern_error<<EOF" >> $GITHUB_ENV
+            cat uv_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Python Lockfile (requirements.lock for legacy projects)
         if: steps.detect.outputs.needs_python_legacy == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating requirements.lock from requirements.txt..."
-          uv pip compile requirements.txt --generate-hashes -o requirements.lock
-          echo "python_lockfile_created=true" >> $GITHUB_ENV
+          uv pip compile requirements.txt --generate-hashes -o requirements.lock 2> requirements_error.log
+          if [ $? -eq 0 ]; then
+            echo "python_legacy_status=✅ Success" >> $GITHUB_ENV
+            echo "python_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "python_legacy_status=❌ Failed" >> $GITHUB_ENV
+            echo "python_legacy_error<<EOF" >> $GITHUB_ENV
+            cat requirements_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Go Lockfile
         if: steps.detect.outputs.needs_go == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating go.sum..."
-          go mod download
-          echo "go_lockfile_created=true" >> $GITHUB_ENV
+          go mod download 2> go_error.log
+          if [ $? -eq 0 ]; then
+            echo "go_status=✅ Success" >> $GITHUB_ENV
+            echo "go_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "go_status=❌ Failed" >> $GITHUB_ENV
+            echo "go_error<<EOF" >> $GITHUB_ENV
+            cat go_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Generate Java Lockfile (Gradle)
         if: steps.detect.outputs.needs_java == 'true' && steps.detect.outputs.skip == 'false'
+        continue-on-error: true
         run: |
+          set +e
           echo "Generating gradle.lockfile..."
-          ./gradlew dependencies --write-locks || gradle dependencies --write-locks
-          echo "java_lockfile_created=true" >> $GITHUB_ENV
+          ./gradlew dependencies --write-locks 2> gradle_error.log || gradle dependencies --write-locks 2> gradle_error.log
+          if [ $? -eq 0 ]; then
+            echo "java_status=✅ Success" >> $GITHUB_ENV
+            echo "java_lockfile_created=true" >> $GITHUB_ENV
+          else
+            echo "java_status=❌ Failed" >> $GITHUB_ENV
+            echo "java_error<<EOF" >> $GITHUB_ENV
+            cat gradle_error.log >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
 
       - name: Deploy Dependabot Cooldown Configuration
         if: steps.detect.outputs.skip == 'false'
@@ -276,6 +326,136 @@ jobs:
             fi
           fi
 
+      - name: Build Lockfile Generation Report
+        if: steps.detect.outputs.skip == 'false'
+        id: report
+        run: |
+          # Build comprehensive lockfile generation report
+          cat > lockfile_report.md << 'REPORT_EOF'
+          ## 🔒 Lockfile Generation Summary
+
+          This PR adds supply chain security controls to enforce the 7-day package maturation policy.
+
+          ### Lockfile Generation Status
+
+          REPORT_EOF
+
+          # npm status
+          if [ "${{ steps.detect.outputs.needs_npm }}" == "true" ]; then
+            if [ "${{ env.npm_status }}" == "✅ Success" ]; then
+              echo "- ✅ **package-lock.json** (npm): Successfully generated" >> lockfile_report.md
+            else
+              echo "- ❌ **package-lock.json** (npm): Failed to generate" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Error:**" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "${{ env.npm_error }}" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Fix:** Review package.json for invalid dependencies or version conflicts" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+            fi
+          fi
+
+          # Python modern (uv.lock) status
+          if [ "${{ steps.detect.outputs.needs_python_modern }}" == "true" ]; then
+            if [ "${{ env.python_modern_status }}" == "✅ Success" ]; then
+              echo "- ✅ **uv.lock** (Python modern): Successfully generated from pyproject.toml" >> lockfile_report.md
+            else
+              echo "- ❌ **uv.lock** (Python modern): Failed to generate" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Error:**" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "${{ env.python_modern_error }}" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Fix:** Check pyproject.toml dependencies for version conflicts or non-existent versions" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+            fi
+          fi
+
+          # Python legacy (requirements.lock) status
+          if [ "${{ steps.detect.outputs.needs_python_legacy }}" == "true" ]; then
+            if [ "${{ env.python_legacy_status }}" == "✅ Success" ]; then
+              echo "- ✅ **requirements.lock** (Python legacy): Successfully generated from requirements.txt" >> lockfile_report.md
+            else
+              echo "- ❌ **requirements.lock** (Python legacy): Failed to generate" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Error:**" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "${{ env.python_legacy_error }}" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Fix:** Update requirements.txt with valid package versions from [PyPI](https://pypi.org/)" >> lockfile_report.md
+              echo "  - Check package history to find available versions" >> lockfile_report.md
+              echo "  - Ensure version constraints are compatible" >> lockfile_report.md
+              echo "  - After fixing, run: \`uv pip compile requirements.txt --generate-hashes -o requirements.lock\`" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+            fi
+          fi
+
+          # Go status
+          if [ "${{ steps.detect.outputs.needs_go }}" == "true" ]; then
+            if [ "${{ env.go_status }}" == "✅ Success" ]; then
+              echo "- ✅ **go.sum** (Go): Successfully generated" >> lockfile_report.md
+            else
+              echo "- ❌ **go.sum** (Go): Failed to generate" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Error:**" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "${{ env.go_error }}" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Fix:** Review go.mod for invalid module versions or network issues" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+            fi
+          fi
+
+          # Java status
+          if [ "${{ steps.detect.outputs.needs_java }}" == "true" ]; then
+            if [ "${{ env.java_status }}" == "✅ Success" ]; then
+              echo "- ✅ **gradle.lockfile** (Java): Successfully generated" >> lockfile_report.md
+            else
+              echo "- ❌ **gradle.lockfile** (Java): Failed to generate" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Error:**" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "${{ env.java_error }}" >> lockfile_report.md
+              echo '  ```' >> lockfile_report.md
+              echo "" >> lockfile_report.md
+              echo "  **Fix:** Review build.gradle for invalid dependencies or repository configuration" >> lockfile_report.md
+              echo "" >> lockfile_report.md
+            fi
+          fi
+
+          cat >> lockfile_report.md << 'REPORT_EOF'
+
+          ### Additional Deployments
+
+          - ✅ **Dependabot cooldown** (Layer 1): Native GitHub feature prevents PRs for packages < 7 days old
+          - ✅ **Client-side protection** (Layer 0): Package manager configs block installations < 7 days old
+
+          ### Next Steps
+
+          1. Review the generated lockfiles
+          2. If any lockfiles failed, follow the fix instructions above
+          3. Ensure your CI/CD pipelines install from lockfiles (not manifests):
+             - **npm**: Use \`npm ci\` (automatically reads package-lock.json)
+             - **Python (uv)**: Use \`uv sync\` or \`uv pip install -r uv.lock\`
+             - **Python (pip)**: Use \`pip install -r requirements.lock\` (NOT requirements.txt)
+             - **Go**: \`go build\` automatically uses go.sum
+             - **Gradle**: Build automatically uses gradle.lockfile
+          4. Merge this PR to enable supply chain security controls
+
+          ---
+          🤖 Generated by [Enterprise Security Governance](https://github.com/${{ github.repository }})
+          REPORT_EOF
+
+          # Save report to environment variable for PR body
+          echo "report_content<<EOF" >> $GITHUB_ENV
+          cat lockfile_report.md >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Create Compliance Branch
         if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false
         run: |
@@ -334,96 +514,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          pr_body="## 🛡️ Supply Chain Security Compliance
-
-          This automated PR adds missing lockfiles and native Dependabot supply chain protection.
-
-          ### 📦 Changes Made:
-          "
-
-          if [ -f "package-lock.json" ]; then
-            pr_body="$pr_body
-          - ✅ Generated \`package-lock.json\` for npm dependencies"
-          fi
-
-          if [ -f "uv.lock" ]; then
-            pr_body="$pr_body
-          - ✅ Generated \`uv.lock\` for Python dependencies"
-          fi
-
-          if [ -f "go.sum" ]; then
-            pr_body="$pr_body
-          - ✅ Generated \`go.sum\` for Go dependencies"
-          fi
-
-          if [ -f "gradle.lockfile" ]; then
-            pr_body="$pr_body
-          - ✅ Generated \`gradle.lockfile\` for Java dependencies"
-          fi
-
-          if [ -f ".github/dependabot.yml" ]; then
-            pr_body="$pr_body
-          - ✅ Deployed \`.github/dependabot.yml\` with native **7-day cooldown policy** (Layer 1)"
-          fi
-
-          if [ "${{ env.security_gate_deployed }}" == "true" ]; then
-            pr_body="$pr_body
-          - ✅ Deployed \`.github/workflows/security-gate.yml\` for **PR validation** (Layer 2)"
-          fi
-
-          if [ -f ".npmrc" ]; then
-            pr_body="$pr_body
-          - ✅ Deployed \`.npmrc\` for **client-side npm/pnpm protection** (Layer 0)"
-          fi
-
-          if [ -f "bunfig.toml" ]; then
-            pr_body="$pr_body
-          - ✅ Deployed \`bunfig.toml\` for **client-side bun protection** (Layer 0)"
-          fi
-
-          if [ "${{ env.uv_config_deployed }}" == "true" ]; then
-            pr_body="$pr_body
-          - ✅ Updated \`pyproject.toml\` with **uv protection settings** (Layer 0)"
-          fi
-
-          pr_body="$pr_body
-
-          ### 🔒 Multi-Layer Supply Chain Protection:
-
-          **Layer 0: Client-Side Protection (NEW)**
-          - 🛡️ Blocks \`npm install\` / \`uv pip install\` for packages < 7 days old
-          - 💻 Protects developer workstation before code written
-          - ✅ Config files checked into Git (automatic for all developers)
-
-          **Layer 1: Dependabot Cooldown Policy (Server-Side)**
-          - ⏸️ Dependabot will **NOT create PRs** for packages published < 7 days ago
-          - ✅ Security updates (CVE patches) **bypass cooldown automatically**
-          - 🔧 Patch releases: 3-day cooldown (faster for bug fixes)
-          - 📦 Feature updates: 7-day cooldown (full protection)
-          - 🚨 Major versions: 14-day cooldown (extended review period)
-
-          **Layer 2: Central Security Gate (Validation)**
-          - Validates manual dependency updates by developers
-          - Enforces break-glass allowlist policy
-          - Audit trail sent to Coralogix SIEM
-
-          **Layer 3: Observability**
-          - All security events logged to Coralogix
-          - Real-time alerting for violations
-          - Compliance audit trail
-
-          ### ✅ Next Steps:
-          1. Review the lockfiles for unexpected dependencies
-          2. Verify \`.github/dependabot.yml\` configuration
-          3. Merge this PR to enable native supply chain protection
-          4. Future Dependabot PRs will respect cooldown periods
-
-          ### 📚 Documentation:
-          - [Native Cooldown Migration Guide](https://github.com/${{ inputs.organization }}/enterprise-security-governance/blob/main/docs/NATIVE-COOLDOWN-MIGRATION.md)
-          - [Dependabot Integration](https://github.com/${{ inputs.organization }}/enterprise-security-governance/blob/main/docs/DEPENDABOT-INTEGRATION.md)
-
-          ---
-          *Automated by [Enterprise Security Governance](https://github.com/${{ inputs.organization }}/enterprise-security-governance)*"
+          # Use comprehensive lockfile report as PR body
+          pr_body="${{ env.report_content }}"
 
           # Create PR without labels (labels may not exist in all repos)
           PR_URL=$(gh pr create \
