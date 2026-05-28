@@ -485,6 +485,28 @@ jobs:
             git add .github/dependabot.yml
           fi
 
+          # Add any other generated files
+          if [ -f ".npmrc" ]; then
+            git add .npmrc
+          fi
+
+          if [ -f "bunfig.toml" ]; then
+            git add bunfig.toml
+          fi
+
+          if [ -f "pyproject.toml" ]; then
+            git add pyproject.toml
+          fi
+
+          # Check if there are any changes to commit
+          if git diff --cached --quiet; then
+            echo "No changes to commit - repository already has all lockfiles and configurations"
+            echo "has_changes=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          echo "has_changes=true" >> $GITHUB_ENV
+
           git commit -m "chore: Add dependency lockfiles and Dependabot cooldown policy
 
           This PR adds missing lockfiles and native Dependabot supply chain protection.
@@ -510,7 +532,7 @@ jobs:
           echo "branch_name=$branch_name" >> $GITHUB_ENV
 
       - name: Create Pull Request
-        if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false
+        if: steps.detect.outputs.skip == 'false' && inputs.dry_run == false && env.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -529,6 +551,12 @@ jobs:
 
           # Try to add labels (fail silently if labels don't exist)
           gh pr edit "$PR_URL" --add-label "security,compliance,automated" 2>/dev/null || echo "⚠️  Note: Could not add labels (labels may not exist in repository)"
+
+      - name: No Changes Summary
+        if: env.has_changes == 'false' && steps.detect.outputs.skip == 'false'
+        run: |
+          echo "✅ Repository ${{ matrix.repo }} already has all required lockfiles and configurations"
+          echo "No PR needed - repository is already compliant"
 
       - name: Dry Run Summary
         if: inputs.dry_run == true && steps.detect.outputs.skip == 'false'
